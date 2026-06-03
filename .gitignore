@@ -1,0 +1,48 @@
+# --- Python / backend ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.db
+*.sqlite3
+backend/portfolio.db
+
+# --- Secrets / config ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- Node / frontend ---
+node_modules/
+dist/
+dist-ssr/
+.vite/
+*.local
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+
+# --- Editor / OS ---
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.log
+coverage/
+.coverage
+htmlcov/
+
+# --- Data / imports ---
+data/
+uploads/
+*.csv
+!**/sample_*.csv
+!**/fixtures/*.csv
