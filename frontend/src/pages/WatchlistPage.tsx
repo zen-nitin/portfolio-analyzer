@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import {
   useWatchlist,
   useAddWatchlistItem,
@@ -88,7 +89,13 @@ export default function WatchlistPage() {
               <div key={item.id} className="watchlist-item">
                 <div style={{ flex: 1 }}>
                   <div>
-                    <span className="wl-symbol">{item.symbol}</span>
+                    <Link
+                      to={`/stock/${encodeURIComponent(item.symbol)}?exchange=${encodeURIComponent(item.exchange)}`}
+                      className="wl-symbol"
+                      style={{ color: 'var(--accent)' }}
+                    >
+                      {item.symbol}
+                    </Link>
                     <span className="wl-exchange">{item.exchange}</span>
                   </div>
                   {item.note && <div className="wl-note">{item.note}</div>}

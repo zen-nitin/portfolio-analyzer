@@ -1,4 +1,5 @@
 import { useState, useMemo } from 'react'
+import { Link } from 'react-router-dom'
 import { useAccount } from '../context/AccountContext'
 import { useHoldings } from '../hooks/usePortfolio'
 import LoadingState from '../components/ui/LoadingState'
@@ -94,7 +95,12 @@ export default function HoldingsPage() {
               {sorted.map((h) => (
                 <tr key={`${h.symbol}-${h.exchange}`}>
                   <td>
-                    <strong>{h.symbol}</strong>
+                    <Link
+                      to={`/stock/${encodeURIComponent(h.symbol)}?exchange=${encodeURIComponent(h.exchange)}`}
+                      style={{ fontWeight: 700, color: 'var(--accent)' }}
+                    >
+                      {h.symbol}
+                    </Link>
                   </td>
                   <td>
                     <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{h.exchange}</span>

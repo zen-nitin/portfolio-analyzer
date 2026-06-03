@@ -38,8 +38,10 @@ def recommendation_system() -> str:
 
 
 def recommendation_user(symbol: str, context: dict) -> str:
+    market_stats = context.get("market_stats", "Market data unavailable.")
     return (
         f"Provide a BUY/SELL/HOLD recommendation for {symbol} ({context.get('exchange', 'NSE')}).\n\n"
+        f"Live market data: {market_stats}\n\n"
         f"Portfolio context:\n"
         f"- User already holds: {', '.join(context.get('symbols', [])) or 'Nothing yet'}\n"
         f"- Portfolio P&L: {context.get('pnl_pct', 0):.1f}%\n"
@@ -60,8 +62,10 @@ def analysis_system() -> str:
 
 
 def analysis_user(symbol: str, context: dict) -> str:
+    market_stats = context.get("market_stats", "Market data unavailable.")
     return (
         f"Provide a comprehensive analysis of {symbol} ({context.get('exchange', 'NSE')}).\n\n"
+        f"Live market data: {market_stats}\n\n"
         f"User context:\n"
         f"- Currently held: {'Yes, ' + str(context.get('holding_detail', '')) if context.get('holding_detail') else 'No'}\n"
         f"- Portfolio P&L: {context.get('pnl_pct', 0):.1f}%\n\n"

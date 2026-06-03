@@ -7,8 +7,10 @@ from pydantic import BaseModel, ConfigDict
 class AccountCreate(BaseModel):
     label: str
     broker: str = "zerodha"
-    api_key: str
-    api_secret: str
+    # api_key / api_secret are required for Zerodha accounts but optional for
+    # manual (CSV-only) accounts that have no broker API integration.
+    api_key: Optional[str] = None
+    api_secret: Optional[str] = None
 
 
 class AccountRead(BaseModel):
@@ -17,7 +19,7 @@ class AccountRead(BaseModel):
     id: int
     label: str
     broker: str
-    api_key: str
+    api_key: Optional[str] = None
     is_active: bool
     access_token_date: Optional[datetime] = None
     created_at: datetime
@@ -27,6 +29,7 @@ class AccountSyncResponse(BaseModel):
     message: str
     holdings_synced: int
     positions_synced: int
+    prices_refreshed: Optional[int] = None
 
 
 class AuthLoginUrlResponse(BaseModel):

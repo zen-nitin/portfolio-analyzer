@@ -34,9 +34,19 @@ def get_connector(account: object) -> BrokerConnector:
                  .api_key, .api_secret, .access_token).
 
     Raises:
-        ValueError: If the broker name is not in the registry.
+        ValueError: If the broker name is not in the registry, or if the
+            account is a manual/CSV-only account (broker="manual") which
+            has no connector.
     """
     broker_name: str = account.broker  # type: ignore[attr-defined]
+
+    if broker_name.lower() == "manual":
+        raise ValueError(
+            "Account has broker='manual' (CSV-only).  Manual accounts do not "
+            "use a broker connector – call derive_holdings_from_transactions() "
+            "and refresh_prices() instead."
+        )
+
     connector_cls = BROKER_REGISTRY.get(broker_name)
     if connector_cls is None:
         raise ValueError(
@@ -44,7 +54,7 @@ def get_connector(account: object) -> BrokerConnector:
             f"Available brokers: {list(BROKER_REGISTRY.keys())}"
         )
     return connector_cls(
-        api_key=account.api_key,  # type: ignore[attr-defined]
-        api_secret=account.api_secret,  # type: ignore[attr-defined]
+        api_key=account.api_key or "",  # type: ignore[attr-defined]
+        api_secret=account.api_secret or "",  # type: ignore[attr-defined]
         access_token=account.access_token,  # type: ignore[attr-defined]
     )

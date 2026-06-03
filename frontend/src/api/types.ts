@@ -10,8 +10,8 @@ export interface Account {
 export interface AccountCreate {
   label: string
   broker: string
-  api_key: string
-  api_secret: string
+  api_key?: string
+  api_secret?: string
 }
 
 export interface AuthStatus {
@@ -105,4 +105,71 @@ export interface Transaction {
 // Health
 export interface Health {
   status: string
+}
+
+// Market / stock data types
+export interface MarketQuote {
+  symbol: string
+  exchange: string
+  last_price: number
+  previous_close: number
+  day_change: number
+  day_change_pct: number
+  currency: string
+}
+
+export interface StockStats {
+  symbol: string
+  exchange: string
+  name: string | null
+  last_price: number | null
+  market_cap: number | null
+  pe_ratio: number | null
+  pb_ratio: number | null
+  eps: number | null
+  dividend_yield: number | null
+  week52_high: number | null
+  week52_low: number | null
+  beta: number | null
+  volume: number | null
+  avg_volume: number | null
+  day_high: number | null
+  day_low: number | null
+  sector: string | null
+  industry: string | null
+}
+
+export interface StockHistoryPoint {
+  date: string
+  close: number
+  volume: number
+}
+
+export interface StockHistory {
+  symbol: string
+  exchange: string
+  period: string
+  interval: string
+  points: StockHistoryPoint[]
+}
+
+export interface StockPerformance {
+  symbol: string
+  exchange: string
+  returns: {
+    '1m': number | null
+    '6m': number | null
+    '1y': number | null
+    '5y': number | null
+  }
+}
+
+export interface MarketProvider {
+  name: string
+  active: boolean
+  configured: boolean
+}
+
+export interface RefreshPricesResult {
+  prices_refreshed: number
 }

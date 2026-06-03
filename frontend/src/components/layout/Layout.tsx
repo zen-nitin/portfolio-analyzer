@@ -1,4 +1,5 @@
-import { Outlet, NavLink, useLocation } from 'react-router-dom'
+import { useState } from 'react'
+import { Outlet, NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { getAccounts } from '../../api/endpoints'
 import { useAccount } from '../../context/AccountContext'
@@ -21,7 +22,17 @@ const PAGE_TITLES: Record<string, string> = {
 
 export default function Layout() {
   const location = useLocation()
+  const navigate = useNavigate()
   const { selectedAccountId, setSelectedAccountId } = useAccount()
+  const [stockSearch, setStockSearch] = useState('')
+
+  function handleStockSearch(e: React.FormEvent) {
+    e.preventDefault()
+    const sym = stockSearch.trim().toUpperCase()
+    if (!sym) return
+    navigate(`/stock/${encodeURIComponent(sym)}`)
+    setStockSearch('')
+  }
 
   const { data: accounts } = useQuery({
     queryKey: ['accounts'],
@@ -54,6 +65,47 @@ export default function Layout() {
         </nav>
 
         <div className="sidebar-footer">
+          {/* Stock search */}
+          <form onSubmit={handleStockSearch} style={{ marginBottom: 14 }}>
+            <span
+              style={{
+                fontSize: 11,
+                textTransform: 'uppercase',
+                letterSpacing: '0.8px',
+                color: 'var(--text-muted)',
+                fontWeight: 600,
+                display: 'block',
+                marginBottom: 6,
+              }}
+            >
+              Stock Lookup
+            </span>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <input
+                className="select-control"
+                style={{ flex: 1, fontSize: 12, padding: '5px 8px' }}
+                placeholder="Symbol…"
+                value={stockSearch}
+                onChange={(e) => setStockSearch(e.target.value)}
+              />
+              <button
+                type="submit"
+                style={{
+                  background: 'var(--accent)',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: 'var(--radius-sm)',
+                  padding: '5px 10px',
+                  fontSize: 12,
+                  cursor: 'pointer',
+                  flexShrink: 0,
+                }}
+              >
+                →
+              </button>
+            </div>
+          </form>
+
           <div className="account-selector-wrap">
             <span className="account-selector-label">Account</span>
             <select

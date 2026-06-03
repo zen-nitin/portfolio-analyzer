@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     # AI provider selection: "openai" | "claude"
     AI_PROVIDER: str = "openai"
 
+    # Market data provider selection: "yfinance" (default, no API key needed)
+    # yfinance is an unofficial Yahoo Finance wrapper – see app/market/README for caveats.
+    MARKET_DATA_PROVIDER: str = "yfinance"
+
     # OpenAI
     # NOTE: A ChatGPT subscription (chat.openai.com) does NOT provide API
     # access.  You need a separate key from platform.openai.com/api-keys.

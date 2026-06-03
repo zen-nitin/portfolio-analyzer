@@ -8,8 +8,14 @@ import type {
   Health,
   Holding,
   LoginUrl,
+  MarketProvider,
+  MarketQuote,
   PortfolioSummary,
   Recommendation,
+  RefreshPricesResult,
+  StockHistory,
+  StockPerformance,
+  StockStats,
   Transaction,
   WatchlistCreate,
   WatchlistItem,
@@ -71,3 +77,27 @@ export const getAnalysis = (symbol: string) =>
 
 // AI providers
 export const getAIProviders = () => api.get<AIProvider[]>('/ai/providers')
+
+// Market data
+export const getMarketQuotes = (symbols: string[], exchange = 'NSE') => {
+  const qs = `symbols=${symbols.map(encodeURIComponent).join(',')}&exchange=${encodeURIComponent(exchange)}`
+  return api.get<MarketQuote[]>(`/market/quote?${qs}`)
+}
+
+export const getStockStats = (symbol: string, exchange = 'NSE') =>
+  api.get<StockStats>(`/market/stats/${encodeURIComponent(symbol)}?exchange=${encodeURIComponent(exchange)}`)
+
+export const getStockHistory = (symbol: string, period = '1y', interval = '1d', exchange = 'NSE') =>
+  api.get<StockHistory>(
+    `/market/history/${encodeURIComponent(symbol)}?period=${encodeURIComponent(period)}&interval=${encodeURIComponent(interval)}&exchange=${encodeURIComponent(exchange)}`,
+  )
+
+export const getStockPerformance = (symbol: string, exchange = 'NSE') =>
+  api.get<StockPerformance>(
+    `/market/performance/${encodeURIComponent(symbol)}?exchange=${encodeURIComponent(exchange)}`,
+  )
+
+export const getMarketProviders = () => api.get<MarketProvider[]>('/market/providers')
+
+export const refreshAccountPrices = (id: string) =>
+  api.post<RefreshPricesResult>(`/accounts/${id}/refresh-prices`)

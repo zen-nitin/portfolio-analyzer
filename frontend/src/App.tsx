@@ -6,6 +6,7 @@ import HoldingsPage from './pages/HoldingsPage'
 import WatchlistPage from './pages/WatchlistPage'
 import InsightsPage from './pages/InsightsPage'
 import AccountsPage from './pages/AccountsPage'
+import StockPage from './pages/StockPage'
 
 export default function App() {
   return (
@@ -18,6 +19,7 @@ export default function App() {
           <Route path="insights" element={<InsightsPage />} />
           <Route path="accounts" element={<AccountsPage />} />
           <Route path="accounts/callback" element={<AccountsPage />} />
+          <Route path="stock/:symbol" element={<StockPage />} />
         </Route>
       </Routes>
     </AccountProvider>

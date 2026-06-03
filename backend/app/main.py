@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.database import init_db
-from app.routers import accounts, auth, holdings, insights, portfolio, transactions, watchlist
+from app.routers import accounts, auth, holdings, insights, market, portfolio, transactions, watchlist
 
 
 @asynccontextmanager
@@ -52,6 +52,7 @@ app.include_router(holdings.router)
 app.include_router(transactions.router)
 app.include_router(watchlist.router)
 app.include_router(insights.router)
+app.include_router(market.router)
 
 
 # ------------------------------------------------------------------

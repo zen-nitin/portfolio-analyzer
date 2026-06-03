@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useRecommendation, useAnalysis, useAIProviders } from '../hooks/useInsights'
 import { useHoldings } from '../hooks/usePortfolio'
 import { useWatchlist } from '../hooks/useWatchlist'
@@ -36,8 +37,18 @@ function AnalysisExtraFields({ analysis }: { analysis: Analysis }) {
 
 export default function InsightsPage() {
   const { selectedAccountId } = useAccount()
-  const [symbol, setSymbol] = useState('')
+  const [searchParams] = useSearchParams()
+  const [symbol, setSymbol] = useState(() => searchParams.get('symbol') ?? '')
   const [activeSymbol, setActiveSymbol] = useState<string | null>(null)
+
+  // If navigated here with ?symbol=, auto-trigger analysis once
+  useEffect(() => {
+    const sym = searchParams.get('symbol')
+    if (sym && sym.trim()) {
+      const upper = sym.trim().toUpperCase()
+      setSymbol(upper)
+    }
+  }, [searchParams])
 
   const providersQ = useAIProviders()
   const holdingsQ = useHoldings(selectedAccountId)
