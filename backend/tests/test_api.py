@@ -1,37 +1,56 @@
 """
 Integration tests for the FastAPI application.
 
-Uses an in-memory SQLite database and TestClient (no real network calls).
-Broker and AI providers are mocked.
+Uses a temporary file-based SQLite database and TestClient (no real network
+calls).  Broker and AI providers are mocked via the DB override.
 """
+import os
+import tempfile
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.orm import sessionmaker
 
 from app.database import Base, get_db
 from app.main import app
 
 # -----------------------------------------------------------------------
-# In-memory test database fixture
+# Temporary file-based SQLite fixture
 # -----------------------------------------------------------------------
-
-TEST_DB_URL = "sqlite:///:memory:"
 
 
 @pytest.fixture(scope="function")
-def db_session():
-    """Provide a fresh in-memory DB session for each test."""
-    engine = create_engine(TEST_DB_URL, connect_args={"check_same_thread": False})
+def test_engine():
+    """Create a temp-file SQLite engine with all tables."""
+    # Import models so they register on Base.metadata
+    import app.models.account      # noqa: F401
+    import app.models.transaction  # noqa: F401
+    import app.models.holding      # noqa: F401
+    import app.models.watchlist    # noqa: F401
+
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    db_url = f"sqlite:///{path}"
+    engine = create_engine(db_url, connect_args={"check_same_thread": False})
     Base.metadata.create_all(engine)
-    TestingSessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    yield engine
+    engine.dispose()
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+@pytest.fixture(scope="function")
+def db_session(test_engine):
+    """Provide a fresh DB session backed by the temp engine."""
+    TestingSessionLocal = sessionmaker(bind=test_engine, autocommit=False, autoflush=False)
     session = TestingSessionLocal()
     try:
         yield session
     finally:
         session.close()
-        Base.metadata.drop_all(engine)
-        engine.dispose()
 
 
 @pytest.fixture(scope="function")
@@ -44,7 +63,7 @@ def client(db_session):
             pass
 
     app.dependency_overrides[get_db] = override_get_db
-    with TestClient(app) as c:
+    with TestClient(app, raise_server_exceptions=True) as c:
         yield c
     app.dependency_overrides.clear()
 

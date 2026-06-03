@@ -7,6 +7,8 @@ Run with:
 The database tables are created automatically on first startup via
 ``init_db()``.
 """
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -14,10 +16,19 @@ from app.config import settings
 from app.database import init_db
 from app.routers import accounts, auth, holdings, insights, portfolio, transactions, watchlist
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan: initialise DB on startup."""
+    init_db()
+    yield
+
+
 app = FastAPI(
     title="Portfolio Analyzer API",
     description="Zerodha portfolio dashboard backend with AI-powered insights.",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 # ------------------------------------------------------------------
@@ -50,12 +61,3 @@ app.include_router(insights.router)
 def health():
     """Simple liveness probe."""
     return {"status": "ok", "version": "0.1.0"}
-
-
-# ------------------------------------------------------------------
-# Startup
-# ------------------------------------------------------------------
-@app.on_event("startup")
-def on_startup():
-    """Initialise database tables on application start."""
-    init_db()

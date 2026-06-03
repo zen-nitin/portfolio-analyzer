@@ -35,7 +35,7 @@ def holding_status(pnl_pct: float) -> str:
         return "GAIN"
     elif pnl_pct >= -0.5:
         return "FLAT"
-    elif pnl_pct > -15.0:
+    elif pnl_pct >= -15.0:
         return "LOSS"
     else:
         return "STRONG_LOSS"

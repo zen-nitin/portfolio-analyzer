@@ -138,9 +138,10 @@ def import_csv(
         return {"imported": 0, "skipped": 0, "errors": ["CSV has no headers"]}
 
     # Build column mapping: original header -> canonical field
+    # Normalise underscores to spaces so "trade_date" matches "trade date"
     col_map: dict[str, str] = {}
     for orig_header in reader.fieldnames:
-        normalised = orig_header.strip().lower()
+        normalised = orig_header.strip().lower().replace("_", " ")
         canonical = _FIELD_MAP.get(normalised)
         if canonical:
             col_map[orig_header] = canonical

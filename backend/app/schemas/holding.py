@@ -33,11 +33,11 @@ class HoldingRead(BaseModel):
         pct = self.pnl_pct
         if pct > 15:
             return "STRONG_GAIN"
-        elif pct > 0:
+        elif pct > 0.5:
             return "GAIN"
         elif pct >= -0.5:
             return "FLAT"
-        elif pct > -15:
+        elif pct >= -15:
             return "LOSS"
         else:
             return "STRONG_LOSS"
