@@ -1,0 +1,61 @@
+"""
+FastAPI application entry point.
+
+Run with:
+    uvicorn app.main:app --reload
+
+The database tables are created automatically on first startup via
+``init_db()``.
+"""
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from app.config import settings
+from app.database import init_db
+from app.routers import accounts, auth, holdings, insights, portfolio, transactions, watchlist
+
+app = FastAPI(
+    title="Portfolio Analyzer API",
+    description="Zerodha portfolio dashboard backend with AI-powered insights.",
+    version="0.1.0",
+)
+
+# ------------------------------------------------------------------
+# CORS – allow the Vite dev server (and any configured origins)
+# ------------------------------------------------------------------
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins_list,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ------------------------------------------------------------------
+# Routers
+# ------------------------------------------------------------------
+app.include_router(auth.router)
+app.include_router(accounts.router)
+app.include_router(portfolio.router)
+app.include_router(holdings.router)
+app.include_router(transactions.router)
+app.include_router(watchlist.router)
+app.include_router(insights.router)
+
+
+# ------------------------------------------------------------------
+# Health check
+# ------------------------------------------------------------------
+@app.get("/api/health", tags=["health"])
+def health():
+    """Simple liveness probe."""
+    return {"status": "ok", "version": "0.1.0"}
+
+
+# ------------------------------------------------------------------
+# Startup
+# ------------------------------------------------------------------
+@app.on_event("startup")
+def on_startup():
+    """Initialise database tables on application start."""
+    init_db()
