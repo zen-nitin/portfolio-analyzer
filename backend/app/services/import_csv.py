@@ -8,6 +8,8 @@ Expected columns (Zerodha Console tradebook export, tolerates variants):
 
     trade_date   / Trade Date / Date
     symbol       / Symbol / tradingsymbol / Instrument
+    isin         / ISIN (optional; the correct netting key — survives ticker
+                   renames and exchange differences. Falls back to symbol.)
     exchange     / Exchange (defaults to "NSE")
     trade_type   / Trade Type / Buy/Sell / Type  (value: buy/sell/B/S)
     quantity     / Qty / Quantity
@@ -41,6 +43,9 @@ _FIELD_MAP: dict[str, str] = {
     "tradingsymbol": "symbol",
     "instrument": "symbol",
     "scrip": "symbol",
+    # isin
+    "isin": "isin",
+    "isin code": "isin",
     # exchange
     "exchange": "exchange",
     # trade_type
@@ -179,6 +184,7 @@ def import_csv(
         fees = _safe_float(mapped.get("fees", "0"))
         exchange = mapped.get("exchange", "NSE") or "NSE"
         symbol = mapped["symbol"].upper()
+        isin = (mapped.get("isin", "") or "").strip().upper() or None
 
         # De-duplicate
         exists = (
@@ -202,6 +208,7 @@ def import_csv(
             account_id=account_id,
             symbol=symbol,
             exchange=exchange,
+            isin=isin,
             trade_type=trade_type,
             quantity=quantity,
             price=price,

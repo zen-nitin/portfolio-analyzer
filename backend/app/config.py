@@ -27,6 +27,28 @@ class Settings(BaseSettings):
     # AI provider selection: "openai" | "claude"
     AI_PROVIDER: str = "openai"
 
+    # AI web search — lets the portfolio-review agent pull LIVE sentiment and
+    # forward-looking outlook (recent news, results, analyst views) rather than
+    # reasoning purely from past price data. Uses the provider's native web
+    # search (OpenAI Responses API / Anthropic web search tool). Degrades
+    # gracefully: if unavailable, the review still runs without web context.
+    AI_WEB_SEARCH: bool = True
+    # Deep research: how many web searches the agent may run per research call
+    # (it researches recent news + the annual report / latest results for each
+    # name it could recommend), and the token budget for the research brief.
+    AI_WEB_SEARCH_MAX_USES: int = 12
+    AI_RESEARCH_MAX_TOKENS: int = 6000
+
+    # AI batch mode — routes the two NON-interactive AI features (the daily
+    # portfolio review and watchlist suggestions) through the provider's Batch
+    # API, which is ~50% cheaper in exchange for asynchronous turnaround
+    # (minutes up to the completion window). Interactive features (per-stock
+    # recommendation/analysis, review chat follow-ups) always stay synchronous.
+    # Degrades gracefully: when this is off, or the active provider does not
+    # support batch, those features fall back to a synchronous call.
+    AI_BATCH: bool = True
+    AI_BATCH_COMPLETION_WINDOW: str = "24h"
+
     # Market data provider selection: "yfinance" (default, no API key needed)
     # yfinance is an unofficial Yahoo Finance wrapper – see app/market/README for caveats.
     MARKET_DATA_PROVIDER: str = "yfinance"

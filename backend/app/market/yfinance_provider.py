@@ -91,6 +91,9 @@ class YFinanceProvider(MarketDataProvider):
                 day_change = round(last_price - previous_close, 4)
                 day_change_pct = round((day_change / previous_close) * 100, 4)
 
+            day_high = _safe(getattr(info, "day_high", None), float)
+            day_low = _safe(getattr(info, "day_low", None), float)
+
             return {
                 "symbol": symbol.upper(),
                 "exchange": exchange.upper(),
@@ -98,6 +101,8 @@ class YFinanceProvider(MarketDataProvider):
                 "previous_close": round(previous_close, 4) if previous_close else None,
                 "day_change": day_change,
                 "day_change_pct": day_change_pct,
+                "day_high": round(day_high, 4) if day_high is not None else None,
+                "day_low": round(day_low, 4) if day_low is not None else None,
                 "currency": _safe(getattr(info, "currency", None), str, "INR"),
             }
         except RuntimeError:
@@ -274,3 +279,194 @@ class YFinanceProvider(MarketDataProvider):
             raise RuntimeError(
                 f"Yahoo Finance performance failed for {symbol} ({exchange}): {exc}"
             ) from exc
+
+    # ------------------------------------------------------------------
+    # Market movers (top gainers / losers)
+    # ------------------------------------------------------------------
+
+    def get_movers(
+        self,
+        count: int = 10,
+        min_market_cap: float = 5e10,
+        exchange: str = "NSE",
+    ) -> dict:
+        """Top NSE/BSE gainers & losers via the Yahoo equity screener.
+
+        Best-effort: returns empty lists on any failure (so the watchlist
+        suggestions still run from holdings + web research alone).
+        """
+        try:
+            gainers = self._screen_movers(count, min_market_cap, gainers=True, exchange=exchange)
+            losers = self._screen_movers(count, min_market_cap, gainers=False, exchange=exchange)
+            return {"gainers": gainers, "losers": losers}
+        except Exception:
+            return {"gainers": [], "losers": []}
+
+    def _screen_movers(
+        self, count: int, min_market_cap: float, gainers: bool, exchange: str
+    ) -> list[dict]:
+        """Run one Yahoo screen (gainers or losers) for the Indian region."""
+        from yfinance import EquityQuery as Q  # lazy import
+
+        pct = Q("gt", ["percentchange", 2.5]) if gainers else Q("lt", ["percentchange", -2.5])
+        query = Q("and", [
+            Q("eq", ["region", "in"]),
+            pct,
+            Q("gt", ["intradaymarketcap", min_market_cap]),
+        ])
+        return self._run_screen(
+            query, sort_field="percentchange", sort_asc=not gainers, count=count
+        )
+
+    def _run_screen(
+        self,
+        query,
+        sort_field: str,
+        sort_asc: bool,
+        count: int,
+        exclude: set[str] | None = None,
+        extra: dict | None = None,
+    ) -> list[dict]:
+        """Run one Yahoo equity screen and normalise + dedupe the rows.
+
+        Over-fetches (the screener returns both .NS and .BO per company), dedupes
+        by base symbol preferring the NSE listing, drops anything in ``exclude``,
+        and returns up to ``count`` items in the shared mover/idea shape. ``extra``
+        maps result keys → output keys for screen-specific fields (e.g. growth).
+        """
+        exclude = {s.upper() for s in (exclude or set())}
+        res = yf.screen(query, sortField=sort_field, sortAsc=sort_asc, size=count * 3)
+        rows = (res or {}).get("quotes", []) if isinstance(res, dict) else []
+
+        out: list[dict] = []
+        index: dict[str, int] = {}
+        for r in rows:
+            base, exch = self._split_yahoo_symbol(r.get("symbol") or "")
+            if not base or base in exclude:
+                continue
+            if base in index:
+                if exch == "NSE":
+                    out[index[base]]["exchange"] = "NSE"
+                continue
+            if len(out) >= count:
+                continue
+            index[base] = len(out)
+            item = {
+                "symbol": base,
+                "exchange": exch,
+                "name": _safe(r.get("shortName") or r.get("longName")),
+                "change_pct": _safe(r.get("regularMarketChangePercent"), float),
+                "last_price": _safe(r.get("regularMarketPrice"), float),
+                "market_cap": _safe(r.get("marketCap"), float),
+            }
+            for res_key, out_key in (extra or {}).items():
+                item[out_key] = _safe(r.get(res_key))
+            out.append(item)
+        return out
+
+    @staticmethod
+    def _split_yahoo_symbol(ysym: str) -> tuple[str, str]:
+        """Map a Yahoo ticker (e.g. 'INFY.NS'/'TCS.BO') → (base symbol, exchange)."""
+        if ysym.endswith(".NS"):
+            return ysym[:-3].upper(), "NSE"
+        if ysym.endswith(".BO"):
+            return ysym[:-3].upper(), "BSE"
+        return ysym.upper(), "NSE"
+
+    # ------------------------------------------------------------------
+    # Idea pools: sector leaders, growth leaders, industry peers
+    # ------------------------------------------------------------------
+
+    # Yahoo's major sector taxonomy (matches the `sector` screener field).
+    _MAJOR_SECTORS = [
+        "Technology", "Financial Services", "Healthcare", "Consumer Cyclical",
+        "Industrials", "Energy", "Basic Materials", "Consumer Defensive",
+    ]
+
+    def _screen_one(self, build_query, sort_field, sort_asc, count, exclude=None, extra=None):
+        """Best-effort single screen → [] on failure (one pool failing is fine)."""
+        try:
+            from yfinance import EquityQuery as Q  # lazy import
+            return self._run_screen(
+                build_query(Q), sort_field, sort_asc, count, exclude=exclude, extra=extra
+            )
+        except Exception:
+            return []
+
+    def get_sector_leaders(
+        self, per_sector: int = 3, min_market_cap: float = 1e11, sectors: list[str] | None = None
+    ) -> list[dict]:
+        """Largest companies per major sector, tagged with their sector."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        sector_list = sectors or self._MAJOR_SECTORS
+
+        def screen_sector(sector: str) -> list[dict]:
+            items = self._screen_one(
+                lambda Q: Q("and", [
+                    Q("eq", ["region", "in"]),
+                    Q("eq", ["sector", sector]),
+                    Q("gt", ["intradaymarketcap", min_market_cap]),
+                ]),
+                sort_field="intradaymarketcap", sort_asc=False, count=per_sector,
+            )
+            for it in items:
+                it["sector"] = sector
+            return items
+
+        try:
+            with ThreadPoolExecutor(max_workers=6) as ex:
+                results = list(ex.map(screen_sector, sector_list))
+            return [it for group in results for it in group]
+        except Exception:
+            return []
+
+    def get_growth_leaders(
+        self,
+        count: int = 12,
+        min_market_cap: float = 5e10,
+        min_rev_growth: float = 15.0,
+        min_eps_growth: float = 10.0,
+    ) -> list[dict]:
+        """High revenue/EPS-growth companies across industries."""
+        return self._screen_one(
+            lambda Q: Q("and", [
+                Q("eq", ["region", "in"]),
+                Q("gt", ["intradaymarketcap", min_market_cap]),
+                Q("gt", ["totalrevenues1yrgrowth.lasttwelvemonths", min_rev_growth]),
+                Q("gt", ["epsgrowth.lasttwelvemonths", min_eps_growth]),
+            ]),
+            sort_field="totalrevenues1yrgrowth.lasttwelvemonths", sort_asc=False, count=count,
+        )
+
+    def get_industry_peers(
+        self,
+        industries: list[str],
+        count_per: int = 4,
+        min_market_cap: float = 2e10,
+        exclude: set[str] | None = None,
+    ) -> dict:
+        """Top names within each given industry — the competitive set."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        uniq = [i for i in dict.fromkeys(industries) if i]  # de-dup, preserve order
+        if not uniq:
+            return {}
+
+        def screen_industry(industry: str) -> tuple[str, list[dict]]:
+            items = self._screen_one(
+                lambda Q: Q("and", [
+                    Q("eq", ["region", "in"]),
+                    Q("eq", ["industry", industry]),
+                    Q("gt", ["intradaymarketcap", min_market_cap]),
+                ]),
+                sort_field="intradaymarketcap", sort_asc=False, count=count_per, exclude=exclude,
+            )
+            return industry, items
+
+        try:
+            with ThreadPoolExecutor(max_workers=6) as ex:
+                pairs = list(ex.map(screen_industry, uniq))
+            return {ind: items for ind, items in pairs if items}
+        except Exception:
+            return {}

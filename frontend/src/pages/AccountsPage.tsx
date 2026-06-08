@@ -6,14 +6,82 @@ import {
   useSyncAccount,
   useLoginUrl,
   useCreateSession,
+  useFreeCash,
+  useSetFreeCash,
 } from '../hooks/useAccounts'
 import { useAIProviders } from '../hooks/useInsights'
 import { useMarketProviders, useRefreshPrices } from '../hooks/useMarket'
-import { importTransactions } from '../api/endpoints'
+import { importTransactions, importLedger } from '../api/endpoints'
 import LoadingState from '../components/ui/LoadingState'
 import ErrorState from '../components/ui/ErrorState'
 import EmptyState from '../components/ui/EmptyState'
+import { formatINR } from '../utils/format'
 import type { Account } from '../api/types'
+
+// Editable free cash (idle money in the trading account). Defaults to the
+// latest funds-ledger balance, but that export is often stale — so let the
+// user override it by hand; the value feeds the dashboard's Personal XIRR.
+function FreeCashEditor({ accountId }: { accountId: string }) {
+  const { data, isLoading } = useFreeCash(accountId)
+  const setMut = useSetFreeCash()
+  const [editing, setEditing] = useState(false)
+  const [value, setValue] = useState('')
+  const [saved, setSaved] = useState(false)
+
+  function startEdit() {
+    setValue(data?.amount != null ? String(data.amount) : '')
+    setSaved(false)
+    setEditing(true)
+  }
+
+  async function save() {
+    const amount = Number(value)
+    if (!Number.isFinite(amount)) return
+    await setMut.mutateAsync({ accountId, amount })
+    setEditing(false)
+    setSaved(true)
+    setTimeout(() => setSaved(false), 2500)
+  }
+
+  return (
+    <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <span className="form-label" style={{ marginBottom: 0 }}>Free cash</span>
+        {editing ? (
+          <>
+            <input
+              className="form-input"
+              type="number"
+              step="any"
+              style={{ width: 140, padding: '5px 8px' }}
+              value={value}
+              autoFocus
+              onChange={(e) => setValue(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') save(); if (e.key === 'Escape') setEditing(false) }}
+            />
+            <button className="btn btn-primary btn-sm" onClick={save} disabled={setMut.isPending}>
+              {setMut.isPending ? 'Saving…' : 'Save'}
+            </button>
+            <button className="btn btn-secondary btn-sm" onClick={() => setEditing(false)}>Cancel</button>
+          </>
+        ) : (
+          <>
+            <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>
+              {isLoading ? '…' : data?.amount != null ? formatINR(data.amount) : '—'}
+            </span>
+            {data && (
+              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                {data.source === 'manual' ? '(manual)' : data.source === 'ledger' ? '(from ledger)' : ''}
+              </span>
+            )}
+            <button className="btn btn-secondary btn-sm" onClick={startEdit}>Edit</button>
+            {saved && <span style={{ fontSize: 12, color: 'var(--positive)' }}>Saved</span>}
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
 
 // Per-account row: sync + refresh prices + optional Zerodha connect
 function AccountRow({ account }: { account: Account }) {
@@ -70,7 +138,7 @@ function AccountRow({ account }: { account: Account }) {
         <span
           className="badge"
           style={{
-            background: isManual ? 'rgba(100,116,139,0.15)' : 'rgba(108,142,245,0.15)',
+            background: isManual ? 'rgba(107,119,147,0.15)' : 'var(--accent-soft)',
             color: isManual ? 'var(--neutral)' : 'var(--accent)',
           }}
         >
@@ -130,23 +198,38 @@ function AccountRow({ account }: { account: Account }) {
           </span>
         )}
       </div>
+
+      <FreeCashEditor accountId={account.id} />
     </div>
   )
 }
 
-// CSV Import widget — primary data entry path
-function CSVImport({ accounts }: { accounts: Account[] }) {
+// CSV Import widget — primary data entry path.
+// variant="tradebook" populates holdings + trade XIRR; variant="ledger"
+// populates the cash account → "invested from pocket" + personal XIRR.
+function CSVImport({
+  accounts,
+  variant = 'tradebook',
+}: {
+  accounts: Account[]
+  variant?: 'tradebook' | 'ledger'
+}) {
+  const isLedger = variant === 'ledger'
   const [file, setFile] = useState<File | null>(null)
   const [accountId, setAccountId] = useState('')
   const [status, setStatus] = useState<'idle' | 'loading' | 'ok' | 'err'>('idle')
   const [msg, setMsg] = useState('')
   const [drag, setDrag] = useState(false)
 
+  const inputId = isLedger ? 'ledger-upload-input' : 'csv-upload-input'
+
   async function handleImport() {
     if (!file) return
     setStatus('loading')
     try {
-      const res = await importTransactions(file, accountId || undefined)
+      const res = isLedger
+        ? await importLedger(file, accountId || undefined)
+        : await importTransactions(file, accountId || undefined)
       setStatus('ok')
       setMsg(res.message ?? 'Import successful!')
       setFile(null)
@@ -158,10 +241,24 @@ function CSVImport({ accounts }: { accounts: Account[] }) {
 
   return (
     <div className="card">
-      <div className="card-title">Import Tradebook CSV</div>
+      <div className="card-title">
+        {isLedger ? 'Import Funds Ledger CSV' : 'Import Tradebook CSV'}
+      </div>
       <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 14, lineHeight: 1.5 }}>
-        Download your tradebook from <strong>Zerodha Console → Reports → Tradebook</strong> and
-        import it here. This populates your holdings and enables XIRR calculation.
+        {isLedger ? (
+          <>
+            Download your ledger from{' '}
+            <strong>Zerodha Console → Reports → Funds / Ledger</strong> and import it
+            here. This tracks the money you've added from your pocket and your
+            personal (cash-based) XIRR.
+          </>
+        ) : (
+          <>
+            Download your tradebook from{' '}
+            <strong>Zerodha Console → Reports → Tradebook</strong> and import it here.
+            This populates your holdings and enables XIRR calculation.
+          </>
+        )}
       </p>
 
       {accounts.length > 0 && (
@@ -184,7 +281,7 @@ function CSVImport({ accounts }: { accounts: Account[] }) {
 
       <div
         className={`upload-area${drag ? ' drag-over' : ''}`}
-        onClick={() => document.getElementById('csv-upload-input')?.click()}
+        onClick={() => document.getElementById(inputId)?.click()}
         onDragOver={(e) => {
           e.preventDefault()
           setDrag(true)
@@ -206,7 +303,7 @@ function CSVImport({ accounts }: { accounts: Account[] }) {
           <div className="upload-text">Drag &amp; drop a CSV or click to browse</div>
         )}
         <input
-          id="csv-upload-input"
+          id={inputId}
           type="file"
           accept=".csv"
           style={{ display: 'none' }}
@@ -539,6 +636,10 @@ export default function AccountsPage() {
         <div>
           {/* CSV import — primary action */}
           <CSVImport accounts={accounts} />
+
+          <div style={{ marginTop: 24 }}>
+            <CSVImport accounts={accounts} variant="ledger" />
+          </div>
 
           {/* Accounts list */}
           <div className="section" style={{ marginTop: 24 }}>

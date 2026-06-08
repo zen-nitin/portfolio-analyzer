@@ -25,6 +25,11 @@ export function formatINRCompact(value: number): string {
   return INR_COMPACT.format(value)
 }
 
+/** Rupee price without forced decimals, e.g. 1870 -> ₹1,870, 18.5 -> ₹18.5 */
+export function formatPrice(value: number): string {
+  return `₹${value.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`
+}
+
 export function formatPct(value: number): string {
   return PCT.format(value / 100)
 }

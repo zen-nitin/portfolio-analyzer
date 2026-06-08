@@ -29,9 +29,9 @@ cd backend
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"          # runtime + dev deps from pyproject.toml
 cp .env.example .env             # then fill in AI key(s)
-uvicorn app.main:app --reload --port 8000   # serves on :8000, docs at /docs
+uvicorn app.main:app --reload --port 9000   # serves on :9000, docs at /docs
 
-pytest                           # run all 107 tests
+pytest                           # run all 147 tests
 pytest tests/test_xirr.py        # one file
 pytest tests/test_xirr.py::test_simple_two_cashflow   # one test
 pytest -k portfolio              # by keyword
@@ -45,7 +45,7 @@ change a model, delete `portfolio.db` (or migrate by hand) to pick it up.
 ```bash
 cd frontend
 npm install
-npm run dev        # Vite dev server on :5173, proxies /api -> :8000
+npm run dev        # Vite dev server on :5173, proxies /api -> :9000
 npm run build      # tsc typecheck + production build to dist/  (use this to verify TS)
 npm run preview    # serve the production build
 ```
@@ -53,7 +53,7 @@ There is no test runner or linter configured on the frontend — `npm run build`
 (which runs `tsc` first) is the typecheck/verification gate.
 
 ### Running the whole app
-Start the backend on `:8000` and the frontend on `:5173` in separate terminals.
+Start the backend on `:9000` and the frontend on `:5173` in separate terminals.
 The Vite dev server proxies `/api` to the backend, so no CORS config is needed
 in dev (the backend also allows `http://localhost:5173` via `CORS_ORIGINS`).
 
@@ -82,13 +82,17 @@ and MF accounts). All broker credentials live **per-account in the DB**, not in
 `config.py`.
 
 ### 2. AI provider abstraction (`backend/app/ai/`)
-- `base.py` — `AIProvider` ABC with a single `complete(system, user,
-  json_schema=None)` method. With a `json_schema` it must return a parsed
-  `dict` (structured output); without one, a plain `str`.
+- `base.py` — `AIProvider` ABC with a `complete(system, user,
+  json_schema=None)` method (with a `json_schema` it returns a parsed `dict`,
+  else a plain `str`) and an optional `web_search(system, user, max_uses)` that
+  returns a free-form research brief or `None`. The default `web_search` is a
+  no-op returning `None`, so callers must degrade gracefully.
 - `openai_provider.py` — **default** (`AI_PROVIDER=openai`, model `gpt-4o`),
-  uses OpenAI structured JSON output.
+  uses OpenAI structured JSON output; `web_search` uses the **Responses API**
+  `web_search` tool.
 - `claude_provider.py` — alternative (`AI_PROVIDER=claude`, model
-  `claude-sonnet-4-6`), uses prompt caching on the system prompt.
+  `claude-sonnet-4-6`), uses prompt caching on the system prompt; `web_search`
+  uses the native `web_search_20250305` tool.
 - `registry.py` — `get_provider()` returns the configured provider, or `None`
   if its API key is missing. `list_providers()` reports `{name, active,
   configured}` for the `/api/ai/providers` endpoint.
@@ -124,13 +128,23 @@ reliability): subclass `MarketDataProvider`, register it, set
 
 ### Data flow & services (`backend/app/services/`)
 - **Models** (`app/models/`): `Account`, `Holding`, `Transaction`,
-  `WatchlistItem`. `Transaction` rows are the source of truth for cashflows.
+  `LedgerEntry`, `WatchlistItem`. `Transaction` rows (share trades) are the
+  source of truth for **trade** cashflows; `LedgerEntry` rows (the broker cash
+  ledger — deposits, withdrawals, charges, settlements) are the source of truth
+  for **money-from-pocket** and the personal XIRR. The two are deliberately
+  separate and their cashflows are disjoint (no double counting).
   `Account.api_key`/`api_secret` are **optional** (nullable) — a `manual`
   account has none.
 - `holdings_derivation.py` — `derive_holdings_from_transactions()` nets
-  buys−sells per (symbol, exchange) into `Holding` rows with weighted-average
-  cost. This is how the **no-broker** flow builds holdings from the imported CSV
-  (no Kite needed); `last_price` is left for the price refresh to fill.
+  buys−sells **by ISIN** (falling back to symbol when ISIN is absent) into
+  `Holding` rows with weighted-average cost. Netting is **not** per
+  (symbol, exchange): shares are fungible across NSE/BSE in one demat and a
+  ticker can be renamed (ZOMATO→ETERNAL) under a stable ISIN, so a per-exchange
+  key would leave **phantom holdings** for positions whose legs span exchanges
+  or a rename. The display symbol/exchange come from the most recent trade (so a
+  renamed holding shows its current ticker, which is also what price lookup
+  needs). This is how the **no-broker** flow builds holdings from the imported
+  CSV (no Kite needed); `last_price` is left for the price refresh to fill.
 - `price_refresh.py` — `refresh_prices()` fetches live quotes from the market
   provider for an account's holdings and updates `last_price`, `day_change`,
   and `pnl`. Provider failure raises (→ 503); partial updates are fine.
@@ -140,20 +154,39 @@ reliability): subclass `MarketDataProvider`, register it, set
   `POST /accounts/{id}/sync` router **forks on broker**: `manual` → derive from
   transactions + refresh prices; `zerodha` → this broker sync.
 - `import_csv.py` — imports a **Zerodha Console tradebook CSV** into
-  `Transaction` rows. This is how lifetime cashflow history gets in, because the
-  Kite API only exposes the current day's trades. It tolerates many header-name
-  variants and dedupes.
+  `Transaction` rows (capturing **ISIN** when the export includes it — used as
+  the holdings netting key). This is how lifetime cashflow history gets in,
+  because the Kite API only exposes the current day's trades. It tolerates many
+  header-name variants and dedupes.
+- `import_ledger.py` — imports a **Zerodha Console funds/ledger CSV** into
+  `LedgerEntry` rows. Classifies each row by `voucher_type` (+ particulars
+  fallback): `Bank Receipts`→deposit, `Bank Payments`→withdrawal, `Journal
+  Entry`→charge, `Book Voucher`→trade, `Reversal Voucher`→other; `amount` is
+  stored signed (credit−debit). Tolerates header variants, dedupes on
+  (account, date, particulars, debit, credit), and skips Opening/Closing
+  Balance markers.
 - `xirr.py` — **dependency-free** XIRR (Newton-Raphson with a bisection
   fallback; no scipy). Convention: outflows/buys are **negative**, inflows/sells
   **positive**, and the current holdings value is appended as a final positive
   cashflow at today's date.
-- `portfolio.py` — `build_summary()` (total invested, current value, P&L, XIRR,
-  day change) and the holding **status classifier**.
-- `insights.py` — the three AI features; calls `get_provider()` and raises 503
+- `portfolio.py` — `build_summary()` (total invested, current value, P&L, trade
+  XIRR, day change) and the holding **status classifier**. When a ledger has
+  been imported it also derives **`net_deposited`** (deposits−withdrawals =
+  money from pocket), `total_withdrawn`, `total_charges`, `free_cash` (latest
+  ledger balance, summed per account), and **`personal_xirr`** — XIRR on bank
+  deposits/withdrawals + (holdings value + free cash) as the final flow. These
+  ledger fields are `null` until a ledger is imported.
+- `insights.py` — the AI features; calls `get_provider()` and raises 503
   when unconfigured. `recommendation`/`analysis` also inject **live market
   stats** (PE, 52-wk range, market cap, …) from the market provider into the
   prompt context so the AI cites real numbers; this degrades gracefully if
-  market data is unavailable.
+  market data is unavailable. `portfolio_review` and `watchlist_suggestions`
+  additionally run a best-effort **web research** step (provider `web_search`,
+  via the shared `_run_web_search` helper) — feeding current sentiment + forward
+  outlook into the prompt so calls aren't based on past performance alone. The
+  watchlist research also pulls the latest session's **top gainers/losers** as an
+  idea source. Gated by `AI_WEB_SEARCH`; the portfolio review skips it on chat
+  follow-ups; degrades to no web context if disabled/unsupported/erroring.
 
 ### Holding status classifier (keep these thresholds in sync)
 Status is derived from P&L % vs cost. **It is computed in two places** —
@@ -194,14 +227,27 @@ error.
 Backend routers in `app/routers/` and frontend `api/endpoints.ts` must stay in
 lockstep. Endpoints: accounts CRUD + `POST /accounts/{id}/sync` + `POST
 /accounts/{id}/refresh-prices`; auth `login-url`/`session`/`status` (zerodha
-only); `GET /portfolio/summary?account_id=`; `GET /holdings?account_id=`;
-transactions list + `POST /transactions/import` (multipart CSV); watchlist CRUD;
+only); `GET /portfolio/summary?account_id=`; `POST
+/portfolio/refresh-prices?account_id=` (refreshes all active accounts or one —
+best-effort, never 503; powers the dashboard's 20s live refresh); `GET
+/holdings?account_id=`;
+transactions list + `POST /transactions/import` (multipart tradebook CSV);
+`GET /ledger?account_id=` + `POST /ledger/import` (multipart funds-ledger CSV);
+watchlist CRUD + `PUT /watchlist/{id}/entry-zone` (set/clear a buy-price range —
+both bounds null clears it; items carry optional `entry_low`/`entry_high`, stored
+in a separate `watchlist_entry_zones` table so no column migration is needed) +
+`PUT /watchlist/reorder` (persist a manual top-first order via a full id list;
+positions live in a separate `watchlist_positions` table — unpositioned items,
+e.g. freshly added, sort to the top; the list endpoint returns this order);
 insights `watchlist-suggestions`, `recommendation`, `analysis/{symbol}`; market
 `GET /market/quote?symbols=&exchange=`, `/market/stats/{symbol}`,
 `/market/history/{symbol}`, `/market/performance/{symbol}`, `/market/providers`;
-`GET /ai/providers`; `GET /health`. `xirr` is returned as a decimal (e.g.
-`0.184` = 18.4%) and may be `null`. Market endpoints return **503** when the
-provider fails; per-stock fields may be `null` when Yahoo lacks them.
+`GET /ai/providers`; `GET /health`. `xirr` (trade) and `personal_xirr`
+(ledger/pocket) are returned as decimals (e.g. `0.184` = 18.4%) and may be
+`null`; the summary's ledger fields (`net_deposited`, `total_withdrawn`,
+`total_charges`, `free_cash`, `personal_xirr`) are `null` until a funds ledger
+is imported. Market endpoints return **503** when the provider fails; per-stock
+fields may be `null` when Yahoo lacks them.
 
 ## Conventions
 - Backend: SQLAlchemy 2.x typed models, Pydantic v2 schemas, DB sessions via

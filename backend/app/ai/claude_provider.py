@@ -78,3 +78,32 @@ class ClaudeProvider(AIProvider):
                 messages=[{"role": "user", "content": user}],
             )
             return message.content[0].text if message.content else ""
+
+    def web_search(self, system: str, user: str, max_uses: int = 6) -> str | None:
+        """Run a web-search-augmented completion via the native web search tool.
+
+        The model issues up to ``max_uses`` searches, then writes a brief. We
+        concatenate all text blocks of the final message (tool_use / search
+        result blocks are skipped). Returns ``None`` on any failure so the
+        caller degrades gracefully.
+        """
+        try:
+            message = self._client.messages.create(
+                model=self._model,
+                max_tokens=settings.AI_RESEARCH_MAX_TOKENS,
+                system=[{"type": "text", "text": system}],  # type: ignore[arg-type]
+                messages=[{"role": "user", "content": user}],
+                tools=[{
+                    "type": "web_search_20250305",
+                    "name": "web_search",
+                    "max_uses": max_uses,
+                }],
+            )
+            texts = [
+                b.text for b in (message.content or [])
+                if getattr(b, "type", None) == "text" and getattr(b, "text", None)
+            ]
+            joined = "\n".join(texts).strip()
+            return joined or None
+        except Exception:
+            return None

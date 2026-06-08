@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000/api'
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:9000/api'
 
 export class ApiError extends Error {
   constructor(
@@ -56,6 +56,12 @@ export const api = {
   post<T>(path: string, body?: unknown) {
     return apiFetch<T>(path, {
       method: 'POST',
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    })
+  },
+  put<T>(path: string, body?: unknown) {
+    return apiFetch<T>(path, {
+      method: 'PUT',
       body: body !== undefined ? JSON.stringify(body) : undefined,
     })
   },

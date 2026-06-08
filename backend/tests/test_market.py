@@ -42,6 +42,7 @@ def test_engine():
     import app.models.transaction  # noqa: F401
     import app.models.holding      # noqa: F401
     import app.models.watchlist    # noqa: F401
+    import app.models.cash         # noqa: F401
 
     fd, path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
@@ -134,11 +135,14 @@ def _mock_provider(quotes=None, stats=None, history=None, performance=None,
 # -----------------------------------------------------------------------
 
 class TestYFinanceProvider:
-    def _make_fast_info(self, last_price=1500.0, previous_close=1480.0, currency="INR"):
+    def _make_fast_info(self, last_price=1500.0, previous_close=1480.0, currency="INR",
+                        day_high=1520.0, day_low=1490.0):
         fi = MagicMock()
         fi.last_price = last_price
         fi.previous_close = previous_close
         fi.currency = currency
+        fi.day_high = day_high
+        fi.day_low = day_low
         return fi
 
     def _make_ticker(self, fast_info=None, info=None, history_df=None):
@@ -166,6 +170,8 @@ class TestYFinanceProvider:
         assert result["currency"] == "INR"
         assert abs(result["day_change"] - 20.0) < 0.01
         assert result["day_change_pct"] is not None
+        assert result["day_high"] == 1520.0
+        assert result["day_low"] == 1490.0
 
     @patch("app.market.yfinance_provider.yf")
     def test_get_quote_no_price_raises_runtime_error(self, mock_yf):
@@ -289,6 +295,115 @@ class TestYFinanceProvider:
         assert result["returns"] is not None
         assert result["returns"]["1y"] is not None
         assert result["returns"]["1y"] > 0
+
+    @patch("app.market.yfinance_provider.yf")
+    def test_get_movers_dedupes_and_maps(self, mock_yf):
+        from app.market.yfinance_provider import YFinanceProvider
+
+        gainers = {"quotes": [
+            {"symbol": "INFY.BO", "shortName": "Infosys", "regularMarketChangePercent": 5.1,
+             "regularMarketPrice": 1500.0, "marketCap": 6e12},
+            {"symbol": "INFY.NS", "shortName": "Infosys", "regularMarketChangePercent": 5.0,
+             "regularMarketPrice": 1500.0, "marketCap": 6e12},
+            {"symbol": "TCS.NS", "shortName": "TCS", "regularMarketChangePercent": 4.0,
+             "regularMarketPrice": 3500.0, "marketCap": 12e12},
+        ]}
+        losers = {"quotes": [
+            {"symbol": "XYZ.NS", "shortName": "Xyz Ltd", "regularMarketChangePercent": -6.0,
+             "regularMarketPrice": 100.0, "marketCap": 1e11},
+        ]}
+        mock_yf.screen.side_effect = [gainers, losers]
+
+        provider = YFinanceProvider()
+        res = provider.get_movers(count=5)
+
+        # INFY.NS/.BO collapse to a single INFY, preferring the NSE listing.
+        assert [g["symbol"] for g in res["gainers"]] == ["INFY", "TCS"]
+        assert res["gainers"][0]["exchange"] == "NSE"
+        assert res["gainers"][0]["name"] == "Infosys"
+        assert res["losers"][0]["symbol"] == "XYZ"
+        assert res["losers"][0]["change_pct"] == -6.0
+
+    @patch("app.market.yfinance_provider.yf")
+    def test_get_movers_graceful_on_failure(self, mock_yf):
+        from app.market.yfinance_provider import YFinanceProvider
+        mock_yf.screen.side_effect = RuntimeError("screener down")
+        provider = YFinanceProvider()
+        assert provider.get_movers() == {"gainers": [], "losers": []}
+
+    @patch("app.market.yfinance_provider.yf")
+    def test_get_sector_leaders_tags_sector(self, mock_yf):
+        from app.market.yfinance_provider import YFinanceProvider
+        # Every per-sector screen returns one name.
+        mock_yf.screen.return_value = {"quotes": [
+            {"symbol": "TCS.NS", "shortName": "TCS", "marketCap": 12e12},
+        ]}
+        provider = YFinanceProvider()
+        res = provider.get_sector_leaders(per_sector=1, sectors=["Technology", "Energy"])
+        assert {r["sector"] for r in res} == {"Technology", "Energy"}
+        assert all(r["symbol"] == "TCS" for r in res)
+
+    @patch("app.market.yfinance_provider.yf")
+    def test_get_growth_leaders(self, mock_yf):
+        from app.market.yfinance_provider import YFinanceProvider
+        mock_yf.screen.return_value = {"quotes": [
+            {"symbol": "FASTGROW.NS", "shortName": "Fast Grow", "marketCap": 1e11},
+            {"symbol": "FASTGROW.BO", "shortName": "Fast Grow", "marketCap": 1e11},
+        ]}
+        provider = YFinanceProvider()
+        res = provider.get_growth_leaders(count=5)
+        assert [r["symbol"] for r in res] == ["FASTGROW"]  # .NS/.BO deduped
+
+    @patch("app.market.yfinance_provider.yf")
+    def test_get_industry_peers_excludes_and_groups(self, mock_yf):
+        from app.market.yfinance_provider import YFinanceProvider
+        mock_yf.screen.return_value = {"quotes": [
+            {"symbol": "INFY.NS", "shortName": "Infosys", "marketCap": 6e12},
+            {"symbol": "HCLTECH.NS", "shortName": "HCL", "marketCap": 3e12},
+        ]}
+        provider = YFinanceProvider()
+        peers = provider.get_industry_peers(
+            ["Information Technology Services"], count_per=5, exclude={"INFY"}
+        )
+        assert list(peers.keys()) == ["Information Technology Services"]
+        syms = [p["symbol"] for p in peers["Information Technology Services"]]
+        assert "INFY" not in syms and "HCLTECH" in syms
+
+    @patch("app.market.yfinance_provider.yf")
+    def test_idea_pools_graceful_on_failure(self, mock_yf):
+        from app.market.yfinance_provider import YFinanceProvider
+        mock_yf.screen.side_effect = RuntimeError("down")
+        provider = YFinanceProvider()
+        assert provider.get_sector_leaders() == []
+        assert provider.get_growth_leaders() == []
+        assert provider.get_industry_peers(["X"]) == {}
+
+    def test_idea_pools_default_empty_on_base(self):
+        from app.market.base import MarketDataProvider
+
+        class _Min(MarketDataProvider):
+            def get_quote(self, symbol, exchange="NSE"): return {}
+            def get_quotes(self, symbols): return []
+            def get_stats(self, symbol, exchange="NSE"): return {}
+            def get_history(self, symbol, period="1y", interval="1d", exchange="NSE"): return {}
+            def get_performance(self, symbol, exchange="NSE"): return {}
+
+        m = _Min()
+        assert m.get_sector_leaders() == [] and m.get_growth_leaders() == []
+        assert m.get_industry_peers(["X"]) == {}
+
+    def test_get_movers_default_empty_on_base(self):
+        """The base provider's optional get_movers returns empty lists."""
+        from app.market.base import MarketDataProvider
+
+        class _Min(MarketDataProvider):
+            def get_quote(self, symbol, exchange="NSE"): return {}
+            def get_quotes(self, symbols): return []
+            def get_stats(self, symbol, exchange="NSE"): return {}
+            def get_history(self, symbol, period="1y", interval="1d", exchange="NSE"): return {}
+            def get_performance(self, symbol, exchange="NSE"): return {}
+
+        assert _Min().get_movers() == {"gainers": [], "losers": []}
 
     def test_exchange_suffix_nse(self):
         from app.market.yfinance_provider import _yahoo_symbol
@@ -456,18 +571,20 @@ class TestDeriveHoldings:
         db_session.refresh(acc)
         return acc
 
-    def _add_tx(self, db_session, account_id, symbol, exchange, trade_type, qty, price):
+    def _add_tx(self, db_session, account_id, symbol, exchange, trade_type, qty, price,
+               isin=None, trade_date=date(2023, 1, 1)):
         from app.models.transaction import Transaction
         tx = Transaction(
             account_id=account_id,
             symbol=symbol.upper(),
             exchange=exchange.upper(),
+            isin=isin,
             trade_type=trade_type,
             quantity=qty,
             price=price,
             amount=qty * price,
             fees=0.0,
-            trade_date=date(2023, 1, 1),
+            trade_date=trade_date,
         )
         db_session.add(tx)
         db_session.commit()
@@ -498,6 +615,21 @@ class TestDeriveHoldings:
 
         assert len(holdings) == 1
         assert holdings[0].quantity == 6.0
+
+    def test_bonus_adds_free_shares_and_dilutes_average(self, db_session):
+        """A bonus issue adds quantity at zero cost: qty rises, avg falls, total cost is unchanged."""
+        from app.services.holdings_derivation import derive_holdings_from_transactions
+        acc = self._create_manual_account(db_session)
+        self._add_tx(db_session, acc.id, "HDFCBANK", "NSE", "buy", 10, 1000.0)  # cost 10,000
+        self._add_tx(db_session, acc.id, "HDFCBANK", "NSE", "bonus", 10, 0.0)   # 1:1 bonus, free
+
+        holdings = derive_holdings_from_transactions(db_session, acc.id)
+
+        assert len(holdings) == 1
+        h = holdings[0]
+        assert h.quantity == 20.0                       # 10 bought + 10 bonus
+        assert abs(h.average_price - 500.0) < 0.01      # 10,000 cost / 20 shares
+        assert abs(h.average_price * h.quantity - 10000.0) < 0.01  # invested unchanged
 
     def test_full_sell_zeroes_out(self, db_session):
         from app.services.holdings_derivation import derive_holdings_from_transactions
@@ -533,6 +665,139 @@ class TestDeriveHoldings:
         assert len(holdings) == 2
         symbols = {h.symbol for h in holdings}
         assert symbols == {"INFY", "TCS"}
+
+    def test_exited_position_avg_held_and_realized(self, db_session):
+        from app.models.transaction import Transaction
+        from app.services.holdings_derivation import compute_exited_positions
+        acc = self._create_manual_account(db_session)
+        # Bought 10 @ 1500, fully sold 10 @ 1700 → exited; held avg 1500; realized +2000.
+        self._add_tx(db_session, acc.id, "INFY", "NSE", "buy", 10, 1500.0,
+                     trade_date=date(2024, 1, 1))
+        self._add_tx(db_session, acc.id, "INFY", "NSE", "sell", 10, 1700.0,
+                     trade_date=date(2024, 6, 1))
+
+        exited = compute_exited_positions(db_session.query(Transaction).all())
+
+        assert len(exited) == 1
+        e = exited[0]
+        assert e["symbol"] == "INFY"
+        assert e["quantity"] == 10.0
+        assert abs(e["average_price"] - 1500.0) < 0.01    # avg held at exit
+        assert abs(e["realized_pnl"] - 2000.0) < 0.01      # (1700-1500)*10
+        assert e["exit_date"] == "2024-06-01"
+
+    def test_open_position_not_listed_as_exited(self, db_session):
+        from app.models.transaction import Transaction
+        from app.services.holdings_derivation import compute_exited_positions
+        acc = self._create_manual_account(db_session)
+        self._add_tx(db_session, acc.id, "INFY", "NSE", "buy", 10, 1500.0)
+        self._add_tx(db_session, acc.id, "INFY", "NSE", "sell", 4, 1700.0)  # still hold 6
+
+        exited = compute_exited_positions(db_session.query(Transaction).all())
+        assert exited == []
+
+    def test_exited_uses_last_cycle_average(self, db_session):
+        """Re-buy after a full exit averages fresh; the exit avg reflects the last cycle."""
+        from app.models.transaction import Transaction
+        from app.services.holdings_derivation import compute_exited_positions
+        acc = self._create_manual_account(db_session)
+        self._add_tx(db_session, acc.id, "SBIN", "NSE", "buy", 10, 500.0, trade_date=date(2024, 1, 1))
+        self._add_tx(db_session, acc.id, "SBIN", "NSE", "sell", 10, 600.0, trade_date=date(2024, 2, 1))
+        self._add_tx(db_session, acc.id, "SBIN", "NSE", "buy", 10, 800.0, trade_date=date(2024, 3, 1))
+        self._add_tx(db_session, acc.id, "SBIN", "NSE", "sell", 10, 850.0, trade_date=date(2024, 4, 1))
+
+        exited = compute_exited_positions(db_session.query(Transaction).all())
+        assert len(exited) == 1
+        # Final exit held the second lot bought @ 800.
+        assert abs(exited[0]["average_price"] - 800.0) < 0.01
+        assert exited[0]["exit_date"] == "2024-04-01"
+
+    def test_exited_endpoint(self, client, db_session):
+        # client + db_session share the same session, so seed trades directly.
+        acc = self._create_manual_account(db_session)
+        self._add_tx(db_session, acc.id, "INFY", "NSE", "buy", 10, 1500.0, trade_date=date(2024, 1, 1))
+        self._add_tx(db_session, acc.id, "INFY", "NSE", "sell", 10, 1700.0, trade_date=date(2024, 6, 1))
+
+        resp = client.get(f"/api/holdings/exited?account_id={acc.id}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["symbol"] == "INFY"
+        assert abs(data[0]["average_price"] - 1500.0) < 0.01
+        assert abs(data[0]["realized_pnl"] - 2000.0) < 0.01
+
+    def test_buy_nse_sell_bse_fully_closes(self, db_session):
+        # Shares are fungible across exchanges: buying on NSE and selling the
+        # same qty on BSE must fully close the position (no phantom holding).
+        from app.services.holdings_derivation import derive_holdings_from_transactions
+        acc = self._create_manual_account(db_session)
+        self._add_tx(db_session, acc.id, "SUZLON", "NSE", "buy", 219, 51.61)
+        self._add_tx(db_session, acc.id, "SUZLON", "BSE", "sell", 219, 55.44)
+
+        holdings = derive_holdings_from_transactions(db_session, acc.id)
+
+        assert holdings == []
+
+    def test_cross_exchange_nets_to_single_holding(self, db_session):
+        # Buy 67 across both exchanges, sell nothing → one merged holding of 67.
+        from app.services.holdings_derivation import derive_holdings_from_transactions
+        acc = self._create_manual_account(db_session)
+        self._add_tx(db_session, acc.id, "SYRMA", "BSE", "buy", 57, 703.26)
+        self._add_tx(db_session, acc.id, "SYRMA", "NSE", "buy", 10, 677.25)
+
+        holdings = derive_holdings_from_transactions(db_session, acc.id)
+
+        assert len(holdings) == 1
+        assert holdings[0].symbol == "SYRMA"
+        assert holdings[0].quantity == 67.0
+
+    def test_isin_merges_renamed_ticker(self, db_session):
+        # Same ISIN, ticker renamed mid-life (ZOMATO→ETERNAL). Buys under the old
+        # name and sells under the new must net by ISIN, and the surviving holding
+        # must display the *current* (most recent) ticker for price lookup.
+        from app.services.holdings_derivation import derive_holdings_from_transactions
+        acc = self._create_manual_account(db_session)
+        zomato_isin = "INE758T01015"
+        self._add_tx(db_session, acc.id, "ZOMATO", "NSE", "buy", 182, 199.79,
+                     isin=zomato_isin, trade_date=date(2023, 6, 1))
+        self._add_tx(db_session, acc.id, "ETERNAL", "NSE", "sell", 66, 250.0,
+                     isin=zomato_isin, trade_date=date(2025, 7, 1))
+
+        holdings = derive_holdings_from_transactions(db_session, acc.id)
+
+        assert len(holdings) == 1
+        assert holdings[0].quantity == 116.0       # 182 − 66, netted by ISIN
+        assert holdings[0].symbol == "ETERNAL"     # current ticker, not ZOMATO
+        assert holdings[0].isin == zomato_isin
+
+    def test_blank_isin_rows_do_not_split_instrument(self, db_session):
+        # The tradebook leaves ISIN blank on some rows. A fully-sold position
+        # whose legs mix ISIN-present and ISIN-blank rows must still net to zero
+        # (the blank rows are tied to the rest via the symbol — no phantom).
+        from app.services.holdings_derivation import derive_holdings_from_transactions
+        acc = self._create_manual_account(db_session)
+        suzlon = "INE040H01021"
+        self._add_tx(db_session, acc.id, "SUZLON", "NSE", "buy", 219, 51.0, isin=suzlon)
+        self._add_tx(db_session, acc.id, "SUZLON", "BSE", "sell", 144, 55.0, isin=suzlon)
+        self._add_tx(db_session, acc.id, "SUZLON", "BSE", "sell", 75, 55.0, isin=None)
+
+        holdings = derive_holdings_from_transactions(db_session, acc.id)
+
+        assert holdings == []
+
+    def test_corporate_action_two_isins_one_symbol_merge(self, db_session):
+        # Same symbol, ISIN changed by a corporate action (e.g. face-value split).
+        # Both legs are the same instrument and must net by symbol.
+        from app.services.holdings_derivation import derive_holdings_from_transactions
+        acc = self._create_manual_account(db_session)
+        self._add_tx(db_session, acc.id, "ADANIPOWER", "NSE", "buy", 20, 300.0,
+                     isin="INE814H01011", trade_date=date(2023, 1, 1))
+        self._add_tx(db_session, acc.id, "ADANIPOWER", "NSE", "sell", 20, 500.0,
+                     isin="INE814H01029", trade_date=date(2024, 1, 1))
+
+        holdings = derive_holdings_from_transactions(db_session, acc.id)
+
+        assert holdings == []  # fully sold across the ISIN change
 
     def test_replaces_existing_holdings(self, db_session):
         from app.services.holdings_derivation import derive_holdings_from_transactions
@@ -606,7 +871,8 @@ class TestRefreshPrices:
         assert count == 1
         db_session.refresh(holding)
         assert holding.last_price == 1600.0
-        assert holding.day_change == 10.0
+        # day_change is stored as the POSITION total: per-share 10.0 × qty 10 = 100.0
+        assert holding.day_change == 100.0
         # pnl = (1600 - 1500) * 10 = 1000
         assert abs(holding.pnl - 1000.0) < 0.01
 

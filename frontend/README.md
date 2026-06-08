@@ -17,7 +17,7 @@ npm install
 
 # Copy environment config
 cp .env.example .env
-# Edit .env to point to your backend if it's not at http://localhost:8000
+# Edit .env to point to your backend if it's not at http://localhost:9000
 ```
 
 ## Running (development)
@@ -26,7 +26,7 @@ cp .env.example .env
 npm run dev
 ```
 
-Opens at **http://localhost:5173**. The Vite dev server proxies all `/api` requests to `http://localhost:8000` (configured in `vite.config.ts`). Make sure the FastAPI backend is running on port 8000.
+Opens at **http://localhost:5173**. The Vite dev server proxies all `/api` requests to `http://localhost:9000` (configured in `vite.config.ts`). Make sure the FastAPI backend is running on port 9000.
 
 ## Building for production
 
@@ -40,7 +40,7 @@ Output goes to `dist/`. Serve with any static file server or `npm run preview` f
 
 | Variable             | Default                        | Description                   |
 |----------------------|--------------------------------|-------------------------------|
-| `VITE_API_BASE_URL`  | `http://localhost:8000/api`    | Backend API base URL          |
+| `VITE_API_BASE_URL`  | `http://localhost:9000/api`    | Backend API base URL          |
 
 ## Pages
 

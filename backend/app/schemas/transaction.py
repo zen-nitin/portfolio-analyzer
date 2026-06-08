@@ -11,6 +11,7 @@ class TransactionRead(BaseModel):
     account_id: int
     symbol: str
     exchange: str
+    isin: Optional[str] = None
     trade_type: str
     quantity: float
     price: float

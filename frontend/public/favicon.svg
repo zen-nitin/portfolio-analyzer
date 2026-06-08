@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <rect width="64" height="64" rx="14" fill="#141414"/>
+  <rect x="0.5" y="0.5" width="63" height="63" rx="13.5" fill="none" stroke="#2a2a2a"/>
+  <!-- bars -->
+  <rect x="13" y="36" width="7" height="15" rx="2" fill="#fb8b1e" opacity="0.35"/>
+  <rect x="25" y="29" width="7" height="22" rx="2" fill="#fb8b1e" opacity="0.55"/>
+  <rect x="37" y="22" width="7" height="29" rx="2" fill="#fb8b1e" opacity="0.8"/>
+  <!-- rising trend line -->
+  <polyline points="13,40 26,33 38,24 50,14" fill="none" stroke="#4af6c3" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="50" cy="14" r="4" fill="#4af6c3"/>
+</svg>

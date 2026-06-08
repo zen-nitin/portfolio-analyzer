@@ -30,6 +30,47 @@ export interface PortfolioSummary {
   pnl_pct: number
   xirr: number | null
   day_change: number
+  // Ledger-derived "from pocket" figures (null until a funds ledger is imported)
+  net_deposited: number | null
+  total_withdrawn: number | null
+  total_charges: number | null
+  free_cash: number | null
+  personal_xirr: number | null
+}
+
+// Ledger (cash account) types
+export type LedgerEntryType =
+  | 'deposit'
+  | 'withdrawal'
+  | 'charge'
+  | 'trade'
+  | 'dividend'
+  | 'other'
+
+export interface LedgerEntry {
+  id: number
+  account_id: number
+  entry_date: string
+  entry_type: LedgerEntryType
+  debit: number
+  credit: number
+  amount: number
+  balance: number
+  particulars: string
+  voucher_type: string
+  created_at: string
+}
+
+export interface LedgerImportResponse {
+  message: string
+  imported: number
+  skipped: number
+  errors: string[]
+  net_deposited: number
+  total_deposited: number
+  total_withdrawn: number
+  total_charges: number
+  free_cash: number
 }
 
 // Holdings types
@@ -47,24 +88,73 @@ export interface Holding {
   day_change: number
 }
 
+// A fully-exited (no longer held) position, derived from the trade history.
+export interface ExitedPosition {
+  symbol: string
+  exchange: string
+  isin: string | null
+  quantity: number          // lot size held just before exiting
+  average_price: number     // average price held at exit
+  exit_date: string | null  // YYYY-MM-DD
+  realized_pnl: number
+  buy_value: number
+  sell_value: number
+}
+
 // Watchlist types
 export interface WatchlistItem {
   id: string
   symbol: string
   exchange: string
   note: string
+  // Optional buy-price range; either bound may be null.
+  entry_low: number | null
+  entry_high: number | null
 }
 
 export interface WatchlistCreate {
   symbol: string
   exchange: string
   note: string
+  entry_low?: number | null
+  entry_high?: number | null
 }
+
+export type SuggestionBucket = 'CORE_GROWTH' | 'TACTICAL' | 'SWAP_CANDIDATE'
+export type SuggestionRisk = 'LOW' | 'MEDIUM' | 'HIGH'
 
 export interface WatchlistSuggestion {
   symbol: string
   exchange: string
   rationale: string
+  // The bucketed-bench fields (optional for resilience to older/sync shapes).
+  bucket?: SuggestionBucket
+  risk?: SuggestionRisk
+  horizon?: string
+  catalyst?: string | null
+  exit_trigger?: string | null
+  replaces?: string | null
+}
+
+export interface FlaggedHolding {
+  symbol: string
+  reason: string
+}
+
+export interface WatchlistSuggestions {
+  suggestions: WatchlistSuggestion[]
+  flagged_holdings?: FlaggedHolding[]
+}
+
+// Async batch jobs (daily review + watchlist suggestions go through the
+// provider Batch API: ~50% cheaper, asynchronous submit -> poll -> result).
+export type BatchStatus = 'pending' | 'completed' | 'failed' | 'expired' | 'cancelled'
+
+export interface BatchJob<T> {
+  batch_id: string | number | null
+  status: BatchStatus
+  result?: T
+  error?: string | null
 }
 
 // Insights types
@@ -83,6 +173,31 @@ export interface Analysis {
   [key: string]: unknown
 }
 
+// Portfolio review (AI analysis of all holdings + watchlist vs an FY goal)
+export interface PortfolioRecommendation {
+  symbol: string
+  exchange: string
+  position: 'HELD' | 'WATCHLIST'
+  action: InsightAction
+  conviction: number
+  rationale: string
+  entry_hint?: string | null
+  exit_hint?: string | null
+}
+
+export interface ReviewMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+export interface PortfolioReview {
+  fy: string
+  target_profit_pct: number
+  answer: string
+  portfolio_commentary: string
+  recommendations: PortfolioRecommendation[]
+}
+
 // AI Provider types
 export interface AIProvider {
   name: string
@@ -95,6 +210,7 @@ export interface Transaction {
   id: string
   symbol: string
   exchange: string
+  isin?: string | null
   trade_type: string
   quantity: number
   price: number
@@ -172,4 +288,6 @@ export interface MarketProvider {
 
 export interface RefreshPricesResult {
   prices_refreshed: number
+  /** False when the poll was skipped because the market is closed. */
+  market_open?: boolean
 }

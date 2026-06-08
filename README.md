@@ -56,16 +56,16 @@ portfolio-analyzer/
 
 ## Setup & run
 
-### 1. Backend (port 8000)
+### 1. Backend (port 9000)
 ```bash
 cd backend
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 cp .env.example .env          # then edit .env (see below)
-uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --reload --port 9000
 ```
 The database and tables are created automatically on first run. Interactive API
-docs: <http://localhost:8000/docs>.
+docs: <http://localhost:9000/docs>.
 
 Edit `.env`:
 ```ini

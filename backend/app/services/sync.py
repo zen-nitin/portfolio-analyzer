@@ -51,7 +51,9 @@ def sync_account(db: Session, account: Account) -> dict:
             average_price=float(h.get("average_price", 0)),
             last_price=float(h.get("last_price", 0)),
             pnl=float(h.get("pnl", 0)),
-            day_change=float(h.get("day_change", h.get("unrealised_profit", 0))),
+            # Kite's day_change is per share; store the position total (× qty) to
+            # match the convention used everywhere else (summary, dashboard).
+            day_change=round(float(h.get("day_change", 0)) * quantity, 4),
             updated_at=datetime.utcnow(),
         )
         db.add(holding)

@@ -24,6 +24,10 @@ class Transaction(Base):
 
     symbol: Mapped[str] = mapped_column(String(50), nullable=False)
     exchange: Mapped[str] = mapped_column(String(20), nullable=False, default="NSE")
+    # ISIN identifies the underlying instrument across exchanges AND ticker
+    # renames (e.g. ZOMATO→ETERNAL share one ISIN). It is the correct key for
+    # netting holdings; symbol is only a fallback when ISIN is absent.
+    isin: Mapped[Optional[str]] = mapped_column(String(20), nullable=True, index=True)
     trade_type: Mapped[str] = mapped_column(String(10), nullable=False)  # "buy" | "sell"
 
     quantity: Mapped[float] = mapped_column(Float, nullable=False)

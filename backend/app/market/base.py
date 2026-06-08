@@ -43,6 +43,8 @@ class MarketDataProvider(ABC):
                 previous_close (float | None)
                 day_change   (float | None)   – absolute change
                 day_change_pct (float | None) – percentage change
+                day_high     (float | None)   – intraday high
+                day_low      (float | None)   – intraday low
                 currency     (str)            – e.g. "INR"
 
         Raises:
@@ -163,3 +165,74 @@ class MarketDataProvider(ABC):
         Raises:
             RuntimeError: On hard failure.
         """
+
+    # ------------------------------------------------------------------
+    # Market movers (top gainers / losers) — optional capability
+    # ------------------------------------------------------------------
+
+    def get_movers(
+        self,
+        count: int = 10,
+        min_market_cap: float = 5e10,
+        exchange: str = "NSE",
+    ) -> dict:
+        """Return the latest session's top gainers and losers.
+
+        This is an OPTIONAL capability used to source fresh, structured stock
+        ideas (vs. relying on a model's training cutoff). Providers that cannot
+        screen the market should leave the default, which returns empty lists —
+        callers MUST treat that as "no movers available" and degrade gracefully.
+
+        Args:
+            count:          Max names to return per side (gainers, losers).
+            min_market_cap: Floor (local currency) to filter out illiquid
+                            micro-caps that dominate raw movers lists.
+            exchange:       Preferred exchange for the returned symbols.
+
+        Returns:
+            ``{"gainers": [...], "losers": [...]}`` where each item is a dict:
+                symbol      (str)
+                exchange    (str)
+                name        (str | None)
+                change_pct  (float | None)  – day % change
+                last_price  (float | None)
+                market_cap  (float | None)
+        """
+        return {"gainers": [], "losers": []}
+
+    def get_sector_leaders(
+        self, per_sector: int = 3, min_market_cap: float = 1e11, sectors: list[str] | None = None
+    ) -> list[dict]:
+        """Largest companies across the major sectors (top stocks per industry).
+
+        Optional capability used as an idea pool. Each item carries its sector.
+        Default returns an empty list; callers degrade gracefully.
+        """
+        return []
+
+    def get_growth_leaders(
+        self,
+        count: int = 12,
+        min_market_cap: float = 5e10,
+        min_rev_growth: float = 15.0,
+        min_eps_growth: float = 10.0,
+    ) -> list[dict]:
+        """High revenue/EPS-growth companies across industries.
+
+        Optional capability; default returns an empty list.
+        """
+        return []
+
+    def get_industry_peers(
+        self,
+        industries: list[str],
+        count_per: int = 4,
+        min_market_cap: float = 2e10,
+        exclude: set[str] | None = None,
+    ) -> dict:
+        """Top names within each given industry — the competitive set of the
+        user's holdings/watchlist. Returns ``{industry: [items]}``.
+
+        Optional capability; default returns an empty dict.
+        """
+        return {}

@@ -20,11 +20,11 @@ cp .env.example .env
 # Edit .env – at minimum set OPENAI_API_KEY or ANTHROPIC_API_KEY
 
 # 4. Run the development server (tables are created on startup)
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+uvicorn app.main:app --reload --host 0.0.0.0 --port 9000
 ```
 
-The API is now available at http://localhost:8000.
-Interactive docs: http://localhost:8000/docs
+The API is now available at http://localhost:9000.
+Interactive docs: http://localhost:9000/docs
 
 ## Running tests
 

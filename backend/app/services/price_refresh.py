@@ -71,7 +71,11 @@ def refresh_prices(db: Session, account_id: int) -> int:
             continue
 
         holding.last_price = float(last_price)
-        holding.day_change = float(quote.get("day_change") or 0.0)
+        # The quote's day_change is PER SHARE; store the POSITION total (× qty)
+        # so the per-holding figure, its day-%, and the summed portfolio "Today"
+        # are all correct.
+        per_share_change = float(quote.get("day_change") or 0.0)
+        holding.day_change = round(per_share_change * holding.quantity, 4)
         holding.pnl = round(
             (holding.last_price - holding.average_price) * holding.quantity, 4
         )

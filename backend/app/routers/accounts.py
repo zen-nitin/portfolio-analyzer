@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.account import Account
+from app.models.transaction import Transaction
 from app.schemas.account import AccountCreate, AccountRead, AccountSyncResponse
 from app.services.sync import sync_account
 from app.services.holdings_derivation import derive_holdings_from_transactions
@@ -193,3 +194,148 @@ def trigger_price_refresh(account_id: int, db: Session = Depends(get_db)):
         )
 
     return {"message": "Prices refreshed", "prices_refreshed": count}
+
+
+# ------------------------------------------------------------------
+# Add shares the tradebook is missing: bonus issues (free) OR a missing
+# buy such as an IPO allotment (real cost). Both re-derive holdings.
+# ------------------------------------------------------------------
+
+class AddSharesRequest(BaseModel):
+    symbol: str
+    exchange: str = "NSE"
+    quantity: float          # number of shares to add
+    price: float = 0.0       # per-share cost; 0 = free bonus shares, >0 = a missing buy
+    trade_date: str          # YYYY-MM-DD (record date for a bonus, trade/allotment date for a buy)
+    isin: Optional[str] = None
+
+
+class AddSharesResponse(BaseModel):
+    message: str
+    holdings_synced: int
+    prices_refreshed: int
+
+
+@router.post("/{account_id}/add-shares", response_model=AddSharesResponse)
+def add_shares(
+    account_id: int,
+    body: AddSharesRequest,
+    db: Session = Depends(get_db),
+):
+    """Add shares the tradebook is missing, then re-derive holdings.
+
+    Two cases the tradebook cannot capture:
+
+    * **Bonus / split** (``price = 0``): free shares credited with no trade.
+      Recorded as a zero-cost ``bonus`` transaction — raises quantity and
+      dilutes the average cost, leaving total cost (and XIRR) unchanged.
+    * **Missing buy** (``price > 0``), e.g. an IPO allotment that never appears
+      in the Console tradebook: recorded as a real ``buy`` (amount = qty × price)
+      so it adds both quantity AND cost basis, and counts as a cashflow in XIRR.
+    """
+    from datetime import date as _date
+
+    account = db.get(Account, account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"Account {account_id} not found")
+
+    symbol = body.symbol.strip().upper()
+    if not symbol:
+        raise HTTPException(status_code=400, detail="symbol is required")
+    if body.quantity <= 0:
+        raise HTTPException(status_code=400, detail="quantity must be positive")
+    if body.price < 0:
+        raise HTTPException(status_code=400, detail="price cannot be negative")
+    try:
+        tx_date = _date.fromisoformat(body.trade_date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="trade_date must be YYYY-MM-DD")
+
+    is_bonus = body.price == 0
+    db.add(Transaction(
+        account_id=account_id,
+        symbol=symbol,
+        exchange=body.exchange.strip().upper() or "NSE",
+        isin=(body.isin.strip().upper() if body.isin else None),
+        trade_type="bonus" if is_bonus else "buy",
+        quantity=body.quantity,
+        price=body.price,
+        amount=round(body.quantity * body.price, 2),  # 0 for a bonus
+        fees=0.0,
+        trade_date=tx_date,
+    ))
+    db.commit()
+
+    try:
+        holdings = derive_holdings_from_transactions(db, account_id)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Holdings derivation failed: {exc}")
+
+    prices_refreshed = 0
+    try:
+        prices_refreshed = refresh_prices(db, account_id)
+    except RuntimeError:
+        pass  # market provider down — holdings still updated
+
+    kind = "bonus" if is_bonus else f"buy @ ₹{body.price:g}"
+    return {
+        "message": f"Recorded {body.quantity:g} {symbol} shares ({kind}); holdings re-derived.",
+        "holdings_synced": len(holdings),
+        "prices_refreshed": prices_refreshed,
+    }
+
+
+# ------------------------------------------------------------------
+# Free cash (manual override of the stale funds-ledger balance)
+# ------------------------------------------------------------------
+
+class FreeCashResponse(BaseModel):
+    account_id: int
+    amount: Optional[float]            # current effective free cash (None if unknown)
+    source: str                       # "manual" | "ledger" | "none"
+
+
+class FreeCashRequest(BaseModel):
+    amount: float
+
+
+@router.get("/{account_id}/free-cash", response_model=FreeCashResponse)
+def get_free_cash(account_id: int, db: Session = Depends(get_db)):
+    """Current free cash for an account — the manual override if set, else the
+    latest imported funds-ledger balance."""
+    from app.models.cash import FreeCashOverride
+    from app.services.portfolio import _latest_balance_by_account, get_ledger_for_accounts
+
+    account = db.get(Account, account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"Account {account_id} not found")
+
+    override = db.get(FreeCashOverride, account_id)
+    if override is not None:
+        return {"account_id": account_id, "amount": round(override.amount, 2), "source": "manual"}
+
+    ledger = get_ledger_for_accounts(db, [account_id])
+    bal = _latest_balance_by_account(ledger).get(account_id)
+    if bal is not None:
+        return {"account_id": account_id, "amount": round(bal, 2), "source": "ledger"}
+    return {"account_id": account_id, "amount": None, "source": "none"}
+
+
+@router.put("/{account_id}/free-cash", response_model=FreeCashResponse)
+def set_free_cash(account_id: int, body: FreeCashRequest, db: Session = Depends(get_db)):
+    """Set (upsert) the manual free-cash override for an account. This replaces
+    the ledger-derived balance in the portfolio summary and personal XIRR."""
+    from app.models.cash import FreeCashOverride
+
+    account = db.get(Account, account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"Account {account_id} not found")
+
+    override = db.get(FreeCashOverride, account_id)
+    if override is None:
+        override = FreeCashOverride(account_id=account_id, amount=body.amount)
+        db.add(override)
+    else:
+        override.amount = body.amount
+    db.commit()
+    return {"account_id": account_id, "amount": round(body.amount, 2), "source": "manual"}

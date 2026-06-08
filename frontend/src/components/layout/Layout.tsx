@@ -1,14 +1,14 @@
-import { useState } from 'react'
-import { Outlet, NavLink, useLocation, useNavigate } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { Outlet, NavLink, useLocation } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { getAccounts } from '../../api/endpoints'
 import { useAccount } from '../../context/AccountContext'
+import { useStockModal } from '../../context/StockModalContext'
 
 const NAV_ITEMS = [
   { to: '/', label: 'Dashboard', icon: '◈' },
   { to: '/holdings', label: 'Holdings', icon: '◉' },
   { to: '/watchlist', label: 'Watchlist', icon: '◎' },
-  { to: '/insights', label: 'AI Insights', icon: '✦' },
   { to: '/accounts', label: 'Accounts', icon: '⊕' },
 ]
 
@@ -16,21 +16,27 @@ const PAGE_TITLES: Record<string, string> = {
   '/': 'Dashboard',
   '/holdings': 'Holdings',
   '/watchlist': 'Watchlist',
-  '/insights': 'AI Insights',
   '/accounts': 'Accounts & Connect',
 }
 
 export default function Layout() {
   const location = useLocation()
-  const navigate = useNavigate()
+  const { openStock } = useStockModal()
   const { selectedAccountId, setSelectedAccountId } = useAccount()
   const [stockSearch, setStockSearch] = useState('')
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(
+    () => localStorage.getItem('sidebarCollapsed') === '1',
+  )
+
+  useEffect(() => {
+    localStorage.setItem('sidebarCollapsed', sidebarCollapsed ? '1' : '0')
+  }, [sidebarCollapsed])
 
   function handleStockSearch(e: React.FormEvent) {
     e.preventDefault()
     const sym = stockSearch.trim().toUpperCase()
     if (!sym) return
-    navigate(`/stock/${encodeURIComponent(sym)}`)
+    openStock(sym)
     setStockSearch('')
   }
 
@@ -43,10 +49,13 @@ export default function Layout() {
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
+      <aside className={`sidebar${sidebarCollapsed ? ' collapsed' : ''}`}>
         <div className="sidebar-logo">
           <h2>
-            <span>Portfolio</span> Analyzer
+            <span className="logo-mark">✦</span>
+            <span className="logo-full">
+              <span>Portfolio</span> Analyzer
+            </span>
           </h2>
         </div>
 
@@ -56,10 +65,11 @@ export default function Layout() {
               key={item.to}
               to={item.to}
               end={item.to === '/'}
+              title={item.label}
               className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}
             >
               <span className="nav-icon">{item.icon}</span>
-              {item.label}
+              <span className="nav-label">{item.label}</span>
             </NavLink>
           ))}
         </nav>
@@ -92,11 +102,12 @@ export default function Layout() {
                 type="submit"
                 style={{
                   background: 'var(--accent)',
-                  color: '#fff',
+                  color: '#1a1205',
                   border: 'none',
                   borderRadius: 'var(--radius-sm)',
                   padding: '5px 10px',
                   fontSize: 12,
+                  fontWeight: 600,
                   cursor: 'pointer',
                   flexShrink: 0,
                 }}
@@ -126,6 +137,15 @@ export default function Layout() {
 
       <div className="main-area">
         <header className="top-bar">
+          <button
+            type="button"
+            className="sidebar-toggle"
+            onClick={() => setSidebarCollapsed((c) => !c)}
+            aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          >
+            {sidebarCollapsed ? '»' : '«'}
+          </button>
           <span className="top-bar-title">{pageTitle}</span>
           {selectedAccountId && accounts && (
             <span className="badge badge-flat">

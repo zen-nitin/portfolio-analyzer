@@ -1,6 +1,47 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { getAccounts, createAccount, syncAccount, getAuthStatus, getLoginUrl, createSession } from '../api/endpoints'
+import { getAccounts, createAccount, syncAccount, getAuthStatus, getLoginUrl, createSession, addShares, getFreeCash, setFreeCash } from '../api/endpoints'
 import type { AccountCreate } from '../api/types'
+
+export function useFreeCash(accountId: string) {
+  return useQuery({
+    queryKey: ['free-cash', accountId],
+    queryFn: () => getFreeCash(accountId),
+    enabled: !!accountId,
+  })
+}
+
+export function useSetFreeCash() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ accountId, amount }: { accountId: string; amount: number }) =>
+      setFreeCash(accountId, amount),
+    onSuccess: (_data, { accountId }) => {
+      qc.invalidateQueries({ queryKey: ['free-cash', accountId] })
+      qc.invalidateQueries({ queryKey: ['portfolio-summary'] })
+    },
+  })
+}
+
+interface AddSharesInput {
+  accountId: string
+  symbol: string
+  exchange: string
+  quantity: number
+  price: number
+  trade_date: string
+  isin?: string | null
+}
+
+export function useAddShares() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ accountId, ...data }: AddSharesInput) => addShares(accountId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['holdings'] })
+      qc.invalidateQueries({ queryKey: ['portfolio-summary'] })
+    },
+  })
+}
 
 export function useAccounts() {
   return useQuery({

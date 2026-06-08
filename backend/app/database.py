@@ -61,7 +61,9 @@ def init_db() -> None:
     # Import all models so their tables are registered on Base.metadata
     import app.models.account       # noqa: F401
     import app.models.transaction   # noqa: F401
+    import app.models.ledger        # noqa: F401
     import app.models.holding       # noqa: F401
     import app.models.watchlist     # noqa: F401
+    import app.models.cash          # noqa: F401
 
     Base.metadata.create_all(bind=engine)
