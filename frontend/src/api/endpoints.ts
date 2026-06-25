@@ -2,8 +2,6 @@ import { api } from './client'
 import type {
   Account,
   AccountCreate,
-  AIProvider,
-  Analysis,
   AuthStatus,
   Health,
   Holding,
@@ -13,19 +11,17 @@ import type {
   LoginUrl,
   MarketProvider,
   MarketQuote,
-  PortfolioReview,
   PortfolioSummary,
-  Recommendation,
-  ReviewMessage,
   RefreshPricesResult,
   StockHistory,
   StockPerformance,
   StockStats,
   Transaction,
+  TransactionCreate,
+  TransactionMutationResponse,
+  TransactionUpdate,
   WatchlistCreate,
   WatchlistItem,
-  WatchlistSuggestions,
-  BatchJob,
 } from './types'
 
 // Health
@@ -66,10 +62,24 @@ export const refreshPortfolioPrices = (accountId?: string) => {
 }
 
 // Transactions
-export const getTransactions = (accountId?: string) => {
-  const qs = accountId ? `?account_id=${encodeURIComponent(accountId)}` : ''
-  return api.get<Transaction[]>(`/transactions${qs}`)
+// Pass `symbol` to get just one holding's trades (its instrument group, across
+// renames) — that's what the holding unit-details modal uses.
+export const getTransactions = (accountId?: string, symbol?: string) => {
+  const params = new URLSearchParams()
+  if (accountId) params.set('account_id', accountId)
+  if (symbol) params.set('symbol', symbol)
+  const qs = params.toString()
+  return api.get<Transaction[]>(`/transactions${qs ? `?${qs}` : ''}`)
 }
+// Single-trade CRUD: each mutation re-derives the account's holdings server-side.
+export const createTransaction = (data: TransactionCreate) =>
+  api.post<TransactionMutationResponse>('/transactions', data)
+export const updateTransaction = (id: string, data: TransactionUpdate) =>
+  api.put<TransactionMutationResponse>(`/transactions/${id}`, data)
+export const deleteTransaction = (id: string) =>
+  api.delete<{ message: string; holdings_synced: number; prices_refreshed: number }>(
+    `/transactions/${id}`,
+  )
 export const importTransactions = (file: File, accountId?: string) => {
   const form = new FormData()
   form.append('file', file)
@@ -100,44 +110,19 @@ export const setWatchlistEntryZone = (
   entry_low: number | null,
   entry_high: number | null,
 ) => api.put<WatchlistItem>(`/watchlist/${id}/entry-zone`, { entry_low, entry_high })
+// Set/clear an item's trade-plan notes (catalyst + exit-when). Pass both null/blank to clear.
+export const setWatchlistPlan = (
+  id: string,
+  catalyst: string | null,
+  exit_when: string | null,
+) => api.put<WatchlistItem>(`/watchlist/${id}/plan`, { catalyst, exit_when })
 // Persist a new manual order (full list of ids, top first).
 export const reorderWatchlist = (ids: string[]) =>
   api.put<WatchlistItem[]>('/watchlist/reorder', { ids: ids.map(Number) })
 
-// Insights
-export const getRecommendation = (symbol: string) =>
-  api.post<Recommendation>('/insights/recommendation', { symbol })
-export const getPortfolioReview = (
-  accountId?: string,
-  targetProfitPct = 75,
-  messages: ReviewMessage[] = [],
-) =>
-  api.post<PortfolioReview>('/insights/portfolio-review', {
-    account_id: accountId ? Number(accountId) : null,
-    target_profit_pct: targetProfitPct,
-    messages,
-  })
-export const getAnalysis = (symbol: string) =>
-  api.get<Analysis>(`/insights/analysis/${encodeURIComponent(symbol)}`)
-
-// Batch insights (async, ~50% cheaper): submit -> poll -> result.
-export const submitPortfolioReviewBatch = (accountId?: string, targetProfitPct = 75) =>
-  api.post<BatchJob<PortfolioReview>>('/insights/portfolio-review/batch', {
-    account_id: accountId ? Number(accountId) : null,
-    target_profit_pct: targetProfitPct,
-  })
-export const submitWatchlistSuggestionsBatch = (count: number) =>
-  api.post<BatchJob<WatchlistSuggestions>>('/insights/watchlist-suggestions/batch', { count })
-export const getBatchJob = <T>(
-  batchId: string,
-  feature: 'portfolio_review' | 'watchlist_suggestions',
-  targetProfitPct = 75,
-) =>
-  api.get<BatchJob<T>>(
-    `/insights/batch/${encodeURIComponent(batchId)}?feature=${feature}&target_profit_pct=${targetProfitPct}`,
-  )
-
-// "Generate elsewhere": assembled prompts to paste into ChatGPT/Claude (no API key needed).
+// Insights — PROMPT-ONLY. The app calls no AI model; these return an assembled
+// prompt to run in Claude/ChatGPT (which researches and returns JSON the user
+// pastes back). No AI API key is needed.
 export const getReviewPrompt = (accountId?: string, targetProfitPct = 75) =>
   api.post<{ prompt: string }>('/insights/portfolio-review/prompt', {
     account_id: accountId ? Number(accountId) : null,
@@ -145,9 +130,6 @@ export const getReviewPrompt = (accountId?: string, targetProfitPct = 75) =>
   })
 export const getWatchlistPrompt = (count: number) =>
   api.post<{ prompt: string }>('/insights/watchlist-suggestions/prompt', { count })
-
-// AI providers
-export const getAIProviders = () => api.get<AIProvider[]>('/ai/providers')
 
 // Market data
 export const getMarketQuotes = (symbols: string[], exchange = 'NSE') => {
@@ -179,6 +161,16 @@ export const addShares = (
 ) =>
   api.post<{ message: string; holdings_synced: number; prices_refreshed: number }>(
     `/accounts/${accountId}/add-shares`,
+    data,
+  )
+
+// Record a sale (reduces/closes a holding, books realized P&L, re-derives holdings).
+export const sellShares = (
+  accountId: string,
+  data: { symbol: string; exchange: string; quantity: number; price: number; trade_date: string; isin?: string | null },
+) =>
+  api.post<{ message: string; holdings_synced: number; prices_refreshed: number; realized_pnl: number }>(
+    `/accounts/${accountId}/sell-shares`,
     data,
   )
 

@@ -7,11 +7,11 @@ import {
   useWatchlistSuggestions,
 } from '../hooks/useWatchlist'
 import { useAddWatchlistItem as useAddFromHook } from '../hooks/useWatchlist'
-import { useAIProviders } from '../hooks/useInsights'
 import { useWatchlistQuotes } from '../hooks/useMarket'
 import { useStockModal } from '../context/StockModalContext'
 import ExternalGenerate from '../components/ExternalGenerate'
 import EntryZoneControl from '../components/EntryZone'
+import PlanControl from '../components/WatchlistPlan'
 import { getWatchlistPrompt } from '../api/endpoints'
 import QuoteChange from '../components/QuoteChange'
 import LoadingState from '../components/ui/LoadingState'
@@ -180,6 +180,7 @@ function WatchlistRow({
         </div>
         {item.note && <div className="wl-note">{item.note}</div>}
         <EntryZoneControl item={item} quote={quote} />
+        <PlanControl item={item} />
       </div>
       <div style={{ minWidth: 130 }}>
         <QuoteChange quote={quote} loading={quoteLoading} />
@@ -204,9 +205,16 @@ export default function WatchlistPage() {
   const reorderMutation = useReorderWatchlist()
   const suggest = useWatchlistSuggestions()
   const addFromSuggestion = useAddFromHook()
-  const providersQ = useAIProviders()
 
-  const [form, setForm] = useState({ symbol: '', exchange: 'NSE', note: '', entryLow: '', entryHigh: '' })
+  const [form, setForm] = useState({
+    symbol: '',
+    exchange: 'NSE',
+    note: '',
+    entryLow: '',
+    entryHigh: '',
+    catalyst: '',
+    exitWhen: '',
+  })
   const [formError, setFormError] = useState('')
 
   // Drag-to-reorder state.
@@ -250,8 +258,10 @@ export default function WatchlistPage() {
         note: form.note.trim(),
         entry_low: entryLow,
         entry_high: entryHigh,
+        catalyst: form.catalyst.trim() || null,
+        exit_when: form.exitWhen.trim() || null,
       })
-      setForm({ symbol: '', exchange: 'NSE', note: '', entryLow: '', entryHigh: '' })
+      setForm({ symbol: '', exchange: 'NSE', note: '', entryLow: '', entryHigh: '', catalyst: '', exitWhen: '' })
     } catch (err) {
       setFormError(err instanceof Error ? err.message : 'Failed to add.')
     }
@@ -266,11 +276,11 @@ export default function WatchlistPage() {
       symbol: s.symbol,
       exchange: s.exchange,
       note: s.rationale.slice(0, 200),
+      // Carry over the AI's catalyst / exit-trigger so the plan is pre-filled.
+      catalyst: s.catalyst ?? null,
+      exit_when: s.exit_trigger ?? null,
     })
   }
-
-  const aiConfigured = (providersQ.data ?? []).some((p) => p.active && p.configured)
-  const isAIUnavailable = providersQ.data !== undefined && !aiConfigured
 
   return (
     <div>
@@ -388,6 +398,24 @@ export default function WatchlistPage() {
                   />
                 </div>
               </div>
+              <div className="form-group">
+                <label className="form-label">Catalyst (optional)</label>
+                <input
+                  className="form-input"
+                  placeholder="Why you'd buy — e.g. Q3 results, order win"
+                  value={form.catalyst}
+                  onChange={(e) => setForm((f) => ({ ...f, catalyst: e.target.value }))}
+                />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Exit when (optional)</label>
+                <input
+                  className="form-input"
+                  placeholder="What would make you sell"
+                  value={form.exitWhen}
+                  onChange={(e) => setForm((f) => ({ ...f, exitWhen: e.target.value }))}
+                />
+              </div>
               {formError && <div className="error-state" style={{ marginBottom: 10 }}>{formError}</div>}
               <button
                 type="submit"
@@ -400,22 +428,23 @@ export default function WatchlistPage() {
           </div>
         </div>
 
-        {/* Right: AI suggestions — auto-generated daily bench */}
+        {/* Right: AI suggestions — generated in your own ChatGPT/Claude */}
         <div>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
-            <div className="section-title" style={{ marginBottom: 0 }}>Daily Ideas</div>
-            <button
-              className="btn btn-secondary btn-sm"
-              onClick={suggest.refresh}
-              disabled={suggest.isPending || !aiConfigured}
-              title="Regenerate today's ideas"
-            >
-              {suggest.isPending ? '…' : '↻ Refresh'}
-            </button>
+            <div className="section-title" style={{ marginBottom: 0 }}>Ideas</div>
+            {suggest.data && (
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={suggest.clear}
+                title="Clear the current ideas so you can generate a fresh set"
+              >
+                ✕ Clear
+              </button>
+            )}
           </div>
           <div style={{ fontSize: 11.5, color: 'var(--text-muted)', margin: '4px 0 12px' }}>
-            10 auto-generated ideas/day · core growth, tactical catalysts, and swap candidates for
-            risky holdings.
+            Core growth, tactical catalysts, and swap candidates for risky holdings — generate them
+            in your own ChatGPT/Claude below, then paste the JSON back.
           </div>
 
           <ExternalGenerate
@@ -423,21 +452,6 @@ export default function WatchlistPage() {
             fetchPrompt={() => getWatchlistPrompt(10).then((r) => r.prompt)}
             onApply={suggest.applyManual}
           />
-
-          {isAIUnavailable && (
-            <div className="ai-unconfigured">
-              <span>⚠</span>
-              <span>AI provider not configured. Add an API key in <em>Accounts</em>.</span>
-            </div>
-          )}
-
-          {!isAIUnavailable && suggest.isError && (
-            <ErrorState error={suggest.error} context="Suggestions" />
-          )}
-
-          {!isAIUnavailable && suggest.isPending && (
-            <LoadingState message="Generating today's ideas (batched to cut cost — may take a few minutes). You can leave this page; it'll keep going." />
-          )}
 
           {/* Holdings the AI flagged as risky */}
           {suggest.data?.flagged_holdings && suggest.data.flagged_holdings.length > 0 && (

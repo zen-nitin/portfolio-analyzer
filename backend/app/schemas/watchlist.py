@@ -11,6 +11,9 @@ class WatchlistItemCreate(BaseModel):
     # Optional buy-price range to set at creation time.
     entry_low: Optional[float] = None
     entry_high: Optional[float] = None
+    # Optional trade-plan notes to set at creation time.
+    catalyst: Optional[str] = None
+    exit_when: Optional[str] = None
 
 
 class WatchlistEntryZoneUpdate(BaseModel):
@@ -18,6 +21,13 @@ class WatchlistEntryZoneUpdate(BaseModel):
 
     entry_low: Optional[float] = None
     entry_high: Optional[float] = None
+
+
+class WatchlistPlanUpdate(BaseModel):
+    """Set or clear an item's trade-plan notes. Both fields blank/null clears it."""
+
+    catalyst: Optional[str] = None
+    exit_when: Optional[str] = None
 
 
 class WatchlistReorder(BaseModel):
@@ -36,4 +46,7 @@ class WatchlistItemRead(BaseModel):
     # Read from the item's entry_low / entry_high properties.
     entry_low: Optional[float] = None
     entry_high: Optional[float] = None
+    # Read from the item's catalyst / exit_when properties.
+    catalyst: Optional[str] = None
+    exit_when: Optional[str] = None
     created_at: datetime

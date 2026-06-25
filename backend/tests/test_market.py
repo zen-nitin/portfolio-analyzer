@@ -654,6 +654,23 @@ class TestDeriveHoldings:
         assert holdings[0].quantity == 20.0
         assert abs(holdings[0].average_price - 1100.0) < 0.01
 
+    def test_fifo_average_after_partial_sell(self, db_session):
+        """A partial sell consumes the OLDEST lots first (FIFO), like Kite — so
+        the remaining average reflects the newer, pricier shares, NOT a blended
+        moving average that leaves the average unchanged on a sell."""
+        from app.services.holdings_derivation import derive_holdings_from_transactions
+        acc = self._create_manual_account(db_session)
+        # Buy 10 @ 100 (old, cheap), then 10 @ 200 (new). Sell 10.
+        self._add_tx(db_session, acc.id, "TCS", "NSE", "buy", 10, 100.0, trade_date=date(2024, 1, 1))
+        self._add_tx(db_session, acc.id, "TCS", "NSE", "buy", 10, 200.0, trade_date=date(2024, 2, 1))
+        self._add_tx(db_session, acc.id, "TCS", "NSE", "sell", 10, 300.0, trade_date=date(2024, 3, 1))
+
+        holdings = derive_holdings_from_transactions(db_session, acc.id)
+        assert len(holdings) == 1
+        assert holdings[0].quantity == 10.0
+        # FIFO: the 10 @ 100 lot is gone; 10 @ 200 remain → avg 200, NOT 150.
+        assert abs(holdings[0].average_price - 200.0) < 0.01
+
     def test_multiple_symbols(self, db_session):
         from app.services.holdings_derivation import derive_holdings_from_transactions
         acc = self._create_manual_account(db_session)

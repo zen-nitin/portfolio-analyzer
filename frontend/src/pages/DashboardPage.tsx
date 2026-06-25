@@ -7,9 +7,7 @@ import { useWatchlist, useDeleteWatchlistItem } from '../hooks/useWatchlist'
 import { useFreeCash, useSetFreeCash } from '../hooks/useAccounts'
 import { useWatchlistQuotes } from '../hooks/useMarket'
 import {
-  useAIProviders,
-  usePortfolioReview,
-  useAskPortfolioReview,
+  useStoredReview,
   useApplyManualReview,
   clearReviewCache,
 } from '../hooks/useInsights'
@@ -20,8 +18,7 @@ import QuoteChange from '../components/QuoteChange'
 import { ActionBadge } from '../components/ui/StatusBadge'
 import LoadingState from '../components/ui/LoadingState'
 import ErrorState from '../components/ui/ErrorState'
-import { ApiError } from '../api/client'
-import type { PortfolioRecommendation, ReviewMessage, Holding, PortfolioSummary } from '../api/types'
+import type { PortfolioRecommendation, Holding, PortfolioSummary } from '../api/types'
 import { formatINR, formatINRCompact, formatNumber, formatPct, formatXIRR, signClass } from '../utils/format'
 import {
   PieChart,
@@ -155,46 +152,20 @@ function sortRecommendations(recs: PortfolioRecommendation[]): PortfolioRecommen
 function PortfolioReviewCard() {
   const { selectedAccountId } = useAccount()
   const { openStock } = useStockModal()
-  const providersQ = useAIProviders()
   const [target, setTarget] = useState(75)
-  const [thread, setThread] = useState<ReviewMessage[]>([])
-  const [question, setQuestion] = useState('')
   const [collapsed, setCollapsed] = useState(true)
 
-  // Only auto-run once an AI provider is actually configured (avoids a 503 call).
-  const aiConfigured = (providersQ.data ?? []).some((p) => p.active && p.configured)
-  const reviewQ = usePortfolioReview(selectedAccountId, target, aiConfigured)
-  const askMut = useAskPortfolioReview(selectedAccountId, target)
+  // Prompt-only: today's review is whatever JSON the user pasted back from
+  // Claude/ChatGPT (stored locally). The app makes no AI call.
+  const reviewQ = useStoredReview(selectedAccountId, target)
   const applyManualReview = useApplyManualReview(selectedAccountId, target)
-
-  const isAIUnavailable =
-    (providersQ.data !== undefined && !aiConfigured) ||
-    (reviewQ.error instanceof ApiError && reviewQ.error.status === 503)
 
   const review = reviewQ.data
   const sorted = review ? sortRecommendations(review.recommendations) : []
-  const busy = reviewQ.isFetching || askMut.isPending
 
   function resetReview() {
-    setThread([])
-    setQuestion('')
-    // Drop the cached result + in-flight batch id so a fresh batch is submitted.
     clearReviewCache(selectedAccountId, target)
     reviewQ.refetch()
-  }
-
-  function submitQuestion(e: React.FormEvent) {
-    e.preventDefault()
-    const q = question.trim()
-    if (!q || askMut.isPending) return
-    const nextThread: ReviewMessage[] = [...thread, { role: 'user', content: q }]
-    setThread(nextThread)
-    setQuestion('')
-    askMut.mutate(nextThread, {
-      onSuccess: (data) =>
-        setThread([...nextThread, { role: 'assistant', content: data.answer }]),
-      onError: () => setThread(thread), // roll back the optimistic user bubble on failure
-    })
   }
 
   return (
@@ -232,13 +203,15 @@ function PortfolioReviewCard() {
             />
             %
           </label>
-          <button
-            className="btn btn-secondary btn-sm"
-            onClick={resetReview}
-            disabled={busy || !aiConfigured}
-          >
-            {busy ? '…' : '↻'}
-          </button>
+          {review && (
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={resetReview}
+              title="Clear the current review"
+            >
+              ✕
+            </button>
+          )}
         </div>
       </div>
 
@@ -249,21 +222,6 @@ function PortfolioReviewCard() {
         fetchPrompt={() => getReviewPrompt(selectedAccountId, target).then((r) => r.prompt)}
         onApply={applyManualReview}
       />
-
-      {isAIUnavailable && (
-        <div className="ai-unconfigured">
-          <span>⚠</span>
-          <span>AI provider not configured. Add an API key in <em>Accounts</em> to get buy/sell calls.</span>
-        </div>
-      )}
-
-      {!isAIUnavailable && !reviewQ.isError && !review && (reviewQ.isFetching || reviewQ.data === null) && (
-        <LoadingState message="Preparing AI suggestions (batched to cut cost — may take a few minutes)…" />
-      )}
-
-      {!isAIUnavailable && reviewQ.isError && !(reviewQ.error instanceof ApiError && reviewQ.error.status === 503) && (
-        <ErrorState error={reviewQ.error} context="Portfolio Review" />
-      )}
 
       {review && (
         <div className="review-scroll">
@@ -310,34 +268,10 @@ function PortfolioReviewCard() {
             </div>
           )}
 
-          {/* Conversation: the AI's opening take, then any Q&A */}
-          <div className="review-chat">
-            {thread.length === 0 && review.answer && (
-              <div className="chat-msg ai">{review.answer}</div>
-            )}
-            {thread.map((m, i) => (
-              <div key={i} className={`chat-msg ${m.role === 'user' ? 'user' : 'ai'}`}>
-                {m.content}
-              </div>
-            ))}
-            {askMut.isPending && <div className="chat-msg ai pending">Thinking…</div>}
-          </div>
+          {review.answer && (
+            <div className="chat-msg ai" style={{ marginTop: 10 }}>{review.answer}</div>
+          )}
         </div>
-      )}
-
-      {review && (
-        <form className="chat-input-row" onSubmit={submitQuestion}>
-          <input
-            className="form-input"
-            placeholder="Ask about these — e.g. why sell LICI?"
-            value={question}
-            onChange={(e) => setQuestion(e.target.value)}
-            disabled={askMut.isPending || !aiConfigured}
-          />
-          <button className="btn btn-primary btn-sm" type="submit" disabled={askMut.isPending || !question.trim()}>
-            Ask
-          </button>
-        </form>
       )}
         </>
       )}

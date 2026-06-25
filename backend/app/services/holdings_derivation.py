@@ -9,7 +9,9 @@ Algorithm:
   Group transactions into instruments (union-find: rows sharing a symbol OR an
   ISIN are the same instrument), then for each instrument group:
     net_quantity  = sum(qty for buys)  – sum(qty for sells)
-    weighted_avg  = total_buy_cost / total_buy_qty   (weighted average cost)
+    average_cost  = FIFO cost basis of the shares STILL held — sells consume the
+                    oldest lots first, so the remaining lots' average is what
+                    Zerodha/Kite shows (NOT a moving average that ignores sells).
     Skip if net_quantity <= 0 (fully sold out).
 
 Netting is NOT per (symbol, exchange): shares of the same company are fungible
@@ -29,6 +31,7 @@ are set to 0.0 initially; call ``refresh_prices`` afterwards to populate them.
 """
 from __future__ import annotations
 
+from collections import deque
 from datetime import datetime
 
 from sqlalchemy.orm import Session
@@ -79,6 +82,27 @@ def group_transactions_by_instrument(
     return list(group_txns.values())
 
 
+def _consume_fifo(lots: "deque[list[float]]", sell_qty: float) -> list[tuple[float, float]]:
+    """Remove ``sell_qty`` shares from the OLDEST lots first (FIFO), in place.
+
+    ``lots`` is a queue of ``[qty, cost_per_share]``. Returns the
+    ``(qty_taken, cost_per_share)`` slices consumed, so callers that need
+    realized P&L can match each sold share against the buy lot it came from.
+    Overselling (more than held) simply drains the queue.
+    """
+    consumed: list[tuple[float, float]] = []
+    remaining = sell_qty
+    while remaining > 1e-9 and lots:
+        lot = lots[0]
+        take = min(lot[0], remaining)
+        consumed.append((take, lot[1]))
+        lot[0] -= take
+        remaining -= take
+        if lot[0] <= 1e-9:
+            lots.popleft()
+    return consumed
+
+
 def derive_holdings_from_transactions(
     db: Session,
     account_id: int,
@@ -108,20 +132,20 @@ def derive_holdings_from_transactions(
     derived: list[Holding] = []
 
     for txs in group_transactions_by_instrument(transactions):
-        # Chronological replay, stable by id for same-day trades. We use a MOVING
-        # weighted-average — the convention brokers (Zerodha) show:
-        #   • buy   → qty += q;  cost += amount;  avg = cost / qty
-        #   • bonus → qty += q;  cost += 0        (free shares dilute the average)
-        #   • sell  → remove q shares AT the current average: cost -= q * avg, qty -= q
-        #             (a sell leaves the average UNCHANGED)
-        # When the position is fully closed the cost basis resets to zero, so a
-        # later re-buy is averaged fresh — e.g. selling out of SBIN and rebuying
-        # gives the new lot's price, not a blend with long-gone lots. Averaging
-        # over *all* buys ever (the old method) is wrong once anything is sold.
+        # Chronological replay, stable by id for same-day trades. Shares are held
+        # as a FIFO queue of lots — this is how Zerodha/Kite computes the average:
+        #   • buy   → append a lot [qty, price]
+        #   • bonus → append a lot [qty, 0]   (free shares dilute the average)
+        #   • sell  → consume shares from the OLDEST lots first (FIFO)
+        # A sell therefore CHANGES the average: dropping the cheapest early lots
+        # leaves the pricier recent ones, raising it (and a full exit empties the
+        # queue, so a later re-buy is averaged fresh). The remaining lots' cost
+        # basis is exactly what Kite shows — a moving average that leaves the
+        # average UNCHANGED on a sell does not (it reads too low after selling
+        # older, cheaper lots).
         txs_sorted = sorted(txs, key=lambda t: (t.trade_date, t.id))
 
-        qty = 0.0
-        cost = 0.0
+        lots = deque()  # FIFO queue; each lot is [qty, cost_per_share]
         isin: str | None = None
         last_date = None
         disp_symbol = txs_sorted[0].symbol.upper()
@@ -132,15 +156,11 @@ def derive_holdings_from_transactions(
             ttype = tx.trade_type.lower()
 
             if ttype in ("buy", "bonus"):
-                qty += tx.quantity
-                cost += tx.amount  # quantity * price, pre-recorded (0 for a bonus)
+                # Per-share cost from the recorded amount (0 for a bonus).
+                per_share = (tx.amount / tx.quantity) if tx.quantity else 0.0
+                lots.append([tx.quantity, per_share])
             elif ttype == "sell":
-                if qty > 0:
-                    cost -= tx.quantity * (cost / qty)  # remove at current avg
-                qty -= tx.quantity
-                if qty <= 1e-9:        # fully sold (or oversold) → reset cost basis
-                    qty = 0.0
-                    cost = 0.0
+                _consume_fifo(lots, tx.quantity)  # drop the oldest lots first
 
             # Most recent trade (any type) sets the display ticker + exchange, so a
             # renamed holding shows its current ticker (ETERNAL, not delisted ZOMATO).
@@ -149,9 +169,11 @@ def derive_holdings_from_transactions(
                 disp_symbol = tx.symbol.upper()
                 disp_exchange = (tx.exchange or "NSE").upper()
 
+        qty = sum(lot[0] for lot in lots)
         if qty <= 1e-9:
             continue  # fully sold (across all exchanges / renames); skip
 
+        cost = sum(lot[0] * lot[1] for lot in lots)
         avg_price = cost / qty if qty > 0 else 0.0
 
         holding = Holding(
@@ -193,8 +215,7 @@ def compute_exited_positions(transactions: list[Transaction]) -> list[dict]:
     for txs in group_transactions_by_instrument(transactions):
         txs_sorted = sorted(txs, key=lambda t: (t.trade_date, t.id))
 
-        qty = 0.0
-        cost = 0.0
+        lots = deque()  # FIFO queue; each lot is [qty, cost_per_share]
         realized = 0.0
         buy_value = 0.0
         sell_value = 0.0
@@ -211,32 +232,31 @@ def compute_exited_positions(transactions: list[Transaction]) -> list[dict]:
             ttype = tx.trade_type.lower()
 
             if ttype in ("buy", "bonus"):
-                qty += tx.quantity
-                cost += tx.amount          # 0 for a bonus
+                per_share = (tx.amount / tx.quantity) if tx.quantity else 0.0
+                lots.append([tx.quantity, per_share])
                 if ttype == "buy":
                     buy_value += tx.amount
             elif ttype == "sell":
-                avg = (cost / qty) if qty > 0 else 0.0
-                sell_price = (tx.amount / tx.quantity) if tx.quantity else 0.0
-                realized += tx.quantity * (sell_price - avg)
-                sell_value += tx.amount
-                # Snapshot the position AS IT STOOD before this sell — the last
-                # such snapshot is the final exit (avg held + lot size + date).
-                exit_avg = avg
-                exit_qty = qty
+                # Snapshot the position AS IT STOOD before this sell (FIFO avg of
+                # the lots still held) — the last snapshot is the final exit.
+                held_qty = sum(lot[0] for lot in lots)
+                held_cost = sum(lot[0] * lot[1] for lot in lots)
+                exit_avg = (held_cost / held_qty) if held_qty > 0 else 0.0
+                exit_qty = held_qty
                 exit_date = tx.trade_date
-                cost -= tx.quantity * avg
-                qty -= tx.quantity
-                if qty <= 1e-9:
-                    qty = 0.0
-                    cost = 0.0
+
+                sell_value += tx.amount
+                sell_price = (tx.amount / tx.quantity) if tx.quantity else 0.0
+                # Realized P&L matches each sold share to the FIFO lot it came from.
+                for take, lot_cost in _consume_fifo(lots, tx.quantity):
+                    realized += take * (sell_price - lot_cost)
 
             if last_date is None or tx.trade_date >= last_date:
                 last_date = tx.trade_date
                 disp_symbol = tx.symbol.upper()
                 disp_exchange = (tx.exchange or "NSE").upper()
 
-        if qty > 1e-9:
+        if sum(lot[0] for lot in lots) > 1e-9:
             continue  # still open → a current holding, not an exited position
 
         if exit_date is None:

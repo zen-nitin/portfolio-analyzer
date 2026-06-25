@@ -6,9 +6,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A personal, single-user dashboard for a Zerodha portfolio that shows total
 invested amount, XIRR, current holdings and their status, a watchlist, and
-per-stock **stats / performance / price history** — plus AI-powered stock
-analysis, buy/sell/hold recommendations, and watchlist suggestions. It is a
+per-stock **stats / performance / price history** — plus AI-powered portfolio
+review (buy/sell calls) and watchlist suggestions. It is a
 local tool: SQLite for storage, secrets in `.env`, no multi-user auth.
+
+**The AI features are PROMPT-ONLY — the app calls no AI model and needs no AI
+API key.** For the review and suggestions, the backend assembles a self-contained
+prompt (your live portfolio context + a JSON schema) that you run in your own
+**Claude/ChatGPT** (using your subscription). That model spins up its own
+subagents, fetches live data from Yahoo Finance and researches the latest news
+itself, and returns JSON — which you paste back into the app. So a Claude/ChatGPT
+**subscription is exactly what you use** here; no pay-as-you-go API key is needed.
 
 **It does not require the Zerodha Kite API.** The default ("manual") flow needs
 no broker credentials at all: holdings, cost basis, and lifetime cashflows come
@@ -28,10 +36,10 @@ communicate only over the REST contract under `/api`.
 cd backend
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"          # runtime + dev deps from pyproject.toml
-cp .env.example .env             # then fill in AI key(s)
+cp .env.example .env             # no AI key needed (AI features are prompt-only)
 uvicorn app.main:app --reload --port 9000   # serves on :9000, docs at /docs
 
-pytest                           # run all 147 tests
+pytest                           # run all 156 tests
 pytest tests/test_xirr.py        # one file
 pytest tests/test_xirr.py::test_simple_two_cashflow   # one test
 pytest -k portfolio              # by keyword
@@ -57,12 +65,13 @@ Start the backend on `:9000` and the frontend on `:5173` in separate terminals.
 The Vite dev server proxies `/api` to the backend, so no CORS config is needed
 in dev (the backend also allows `http://localhost:5173` via `CORS_ORIGINS`).
 
-## Architecture — the three abstractions that matter
+## Architecture — the two abstractions that matter
 
-This codebase is deliberately built around **three pluggable interfaces** so that
-new brokers, AI providers, and market-data sources can be added without touching
-call sites. When extending functionality, work through these — do not hardcode
-Zerodha, a specific AI vendor, or yfinance anywhere else.
+This codebase is deliberately built around **two pluggable interfaces** so that
+new brokers and market-data sources can be added without touching call sites.
+When extending functionality, work through these — do not hardcode Zerodha or
+yfinance anywhere else. (There is no AI-provider abstraction: the AI features are
+prompt-only — see below.)
 
 ### 1. Broker abstraction (`backend/app/brokers/`)
 - `base.py` — `BrokerConnector` ABC. Methods: `get_login_url`,
@@ -81,35 +90,31 @@ multi-account design is the whole point (the user intends to add more Zerodha
 and MF accounts). All broker credentials live **per-account in the DB**, not in
 `config.py`.
 
-### 2. AI provider abstraction (`backend/app/ai/`)
-- `base.py` — `AIProvider` ABC with a `complete(system, user,
-  json_schema=None)` method (with a `json_schema` it returns a parsed `dict`,
-  else a plain `str`) and an optional `web_search(system, user, max_uses)` that
-  returns a free-form research brief or `None`. The default `web_search` is a
-  no-op returning `None`, so callers must degrade gracefully.
-- `openai_provider.py` — **default** (`AI_PROVIDER=openai`, model `gpt-4o`),
-  uses OpenAI structured JSON output; `web_search` uses the **Responses API**
-  `web_search` tool.
-- `claude_provider.py` — alternative (`AI_PROVIDER=claude`, model
-  `claude-sonnet-4-6`), uses prompt caching on the system prompt; `web_search`
-  uses the native `web_search_20250305` tool.
-- `registry.py` — `get_provider()` returns the configured provider, or `None`
-  if its API key is missing. `list_providers()` reports `{name, active,
-  configured}` for the `/api/ai/providers` endpoint.
-- `prompts.py` — all system prompts and JSON schemas for the three AI features
-  live here, not inline in the service.
+### AI insights are PROMPT-ONLY (no AI-provider abstraction)
+There is **no** `app/ai/` provider abstraction, no OpenAI/Anthropic SDK call, no
+API key, and no batch/web-search machinery in the app. The two AI features
+(portfolio review, watchlist suggestions) work like this:
+1. The backend **assembles a self-contained prompt** — `app/services/insights.py`
+   builds the portfolio context (the data only the app has: holdings, cost basis,
+   P&L, watchlist, free cash, XIRR) and `app/ai/prompts.py` supplies the system/
+   user text + JSON schema. The two `/prompt` endpoints return `{prompt}`.
+2. The **user runs that prompt in their own Claude/ChatGPT** (subscription, not
+   API). The prompt instructs the model to **spin up its own subagents, fetch
+   live data from Yahoo Finance, research the latest news**, and return JSON
+   matching the schema.
+3. The user **pastes the JSON back**; the frontend (`ExternalGenerate` +
+   `useApplyManualReview` / `useWatchlistSuggestions().applyManual`) validates it,
+   stores it in localStorage, and renders it.
 
-**Graceful degradation is a hard rule:** if the active provider has no API key,
-`get_provider()` returns `None` and AI endpoints return **HTTP 503** with a
-clear message — they must never 500. The frontend renders a friendly "AI
-provider not configured" banner for 503s. Preserve this behaviour.
+So `app/ai/` is **just `prompts.py`** (prompt text + the two JSON schemas). The
+backend does **no research and no market-data fetching for the AI features** —
+the model does all of it. When changing a schema, update both `prompts.py` and
+the frontend types/ingestion in lockstep. Do **not** reintroduce a server-side AI
+call, an API key, or code-side research — the whole point is that Claude/ChatGPT
+does the work via a pasted prompt. (See `app/services/insights.py`:
+`watchlist_suggestions_prompt` / `portfolio_review_prompt`.)
 
-> **Important caveat to remember and repeat to the user:** a ChatGPT
-> subscription is **not** OpenAI API access. The app calls the OpenAI **API**,
-> which needs a separate pay-as-you-go key from platform.openai.com. This is
-> documented in `.env.example` and `config.py`.
-
-### 3. Market data abstraction (`backend/app/market/`)
+### 2. Market data abstraction (`backend/app/market/`)
 - `base.py` — `MarketDataProvider` ABC: `get_quote`, `get_quotes` (batch),
   `get_stats`, `get_history`, `get_performance`. This is **stock/market data**
   (about the instrument, not your account), distinct from the broker.
@@ -176,17 +181,19 @@ reliability): subclass `MarketDataProvider`, register it, set
   ledger balance, summed per account), and **`personal_xirr`** — XIRR on bank
   deposits/withdrawals + (holdings value + free cash) as the final flow. These
   ledger fields are `null` until a ledger is imported.
-- `insights.py` — the AI features; calls `get_provider()` and raises 503
-  when unconfigured. `recommendation`/`analysis` also inject **live market
-  stats** (PE, 52-wk range, market cap, …) from the market provider into the
-  prompt context so the AI cites real numbers; this degrades gracefully if
-  market data is unavailable. `portfolio_review` and `watchlist_suggestions`
-  additionally run a best-effort **web research** step (provider `web_search`,
-  via the shared `_run_web_search` helper) — feeding current sentiment + forward
-  outlook into the prompt so calls aren't based on past performance alone. The
-  watchlist research also pulls the latest session's **top gainers/losers** as an
-  idea source. Gated by `AI_WEB_SEARCH`; the portfolio review skips it on chat
-  follow-ups; degrades to no web context if disabled/unsupported/erroring.
+- `insights.py` — **PROMPT-ONLY**; calls no AI model and fetches no market data.
+  Two builders — `watchlist_suggestions_prompt(count, holdings, watchlist)` and
+  `portfolio_review_prompt(holdings, watchlist, summary, target, today)` — turn
+  the portfolio context (DB-only: symbol, qty, avg cost, last-known price, P&L%,
+  free cash, XIRR) plus the `prompts.py` system/user text and JSON schema into a
+  single copy-paste prompt (via `_wrap_as_prompt`). The prompt tells the model to
+  spin up **its own subagents**, fetch live data from **Yahoo Finance itself**,
+  research the latest dated news/fundamentals per stock, and return JSON matching
+  the schema. There is **no** `get_provider`, `complete`, `web_search`, batch,
+  per-stock fan-out, or market-stats injection — the model does all the work.
+  `current_fy_label()` (Indian FY, Apr–Mar) is the only other helper here. The
+  pasted-back JSON is ingested and rendered on the frontend (`ExternalGenerate` +
+  `applyManual`), not by the backend.
 
 ### Holding status classifier (keep these thresholds in sync)
 Status is derived from P&L % vs cost. **It is computed in two places** —
@@ -220,13 +227,18 @@ error.
 - `context/AccountContext.tsx` — global "All accounts / specific account"
   selector. Summary and holdings endpoints take an optional `account_id`; the
   selector is how multi-account is surfaced in the UI.
-- `components/ui/` — shared `LoadingState`, `ErrorState` (503 → AI-not-
-  configured banner), `EmptyState`, `StatusBadge`. Reuse these for new views.
+- `components/ui/` — shared `LoadingState`, `ErrorState`, `EmptyState`,
+  `StatusBadge`. Reuse these for new views. The AI review/suggestions surface
+  uses `components/ExternalGenerate` (copy prompt → open Claude/ChatGPT → paste
+  JSON back).
 
 ## API contract (`/api`)
 Backend routers in `app/routers/` and frontend `api/endpoints.ts` must stay in
 lockstep. Endpoints: accounts CRUD + `POST /accounts/{id}/sync` + `POST
-/accounts/{id}/refresh-prices`; auth `login-url`/`session`/`status` (zerodha
+/accounts/{id}/refresh-prices` + `POST /accounts/{id}/add-shares` (record a
+missing buy/bonus) + `POST /accounts/{id}/sell-shares` (record a sale: writes a
+`sell` Transaction, re-derives holdings, returns realized P&L; rejects selling
+more than held); auth `login-url`/`session`/`status` (zerodha
 only); `GET /portfolio/summary?account_id=`; `POST
 /portfolio/refresh-prices?account_id=` (refreshes all active accounts or one —
 best-effort, never 503; powers the dashboard's 20s live refresh); `GET
@@ -236,13 +248,18 @@ transactions list + `POST /transactions/import` (multipart tradebook CSV);
 watchlist CRUD + `PUT /watchlist/{id}/entry-zone` (set/clear a buy-price range —
 both bounds null clears it; items carry optional `entry_low`/`entry_high`, stored
 in a separate `watchlist_entry_zones` table so no column migration is needed) +
+`PUT /watchlist/{id}/plan` (set/clear free-text `catalyst` + `exit_when` notes —
+both blank/null clears it; stored in a separate `watchlist_plans` table, same
+no-migration pattern) +
 `PUT /watchlist/reorder` (persist a manual top-first order via a full id list;
 positions live in a separate `watchlist_positions` table — unpositioned items,
 e.g. freshly added, sort to the top; the list endpoint returns this order);
-insights `watchlist-suggestions`, `recommendation`, `analysis/{symbol}`; market
+insights (PROMPT-ONLY — return `{prompt}`, no AI call):
+`POST /insights/watchlist-suggestions/prompt` ({count}) and
+`POST /insights/portfolio-review/prompt` ({account_id, target_profit_pct}); market
 `GET /market/quote?symbols=&exchange=`, `/market/stats/{symbol}`,
 `/market/history/{symbol}`, `/market/performance/{symbol}`, `/market/providers`;
-`GET /ai/providers`; `GET /health`. `xirr` (trade) and `personal_xirr`
+`GET /health`. `xirr` (trade) and `personal_xirr`
 (ledger/pocket) are returned as decimals (e.g. `0.184` = 18.4%) and may be
 `null`; the summary's ledger fields (`net_deposited`, `total_withdrawn`,
 `total_charges`, `free_cash`, `personal_xirr`) are `null` until a funds ledger
@@ -252,8 +269,8 @@ fields may be `null` when Yahoo lacks them.
 ## Conventions
 - Backend: SQLAlchemy 2.x typed models, Pydantic v2 schemas, DB sessions via
   FastAPI dependency injection. Pinned deps in `pyproject.toml`.
-- Tests must not hit the network — brokers and AI providers are mocked, and DB
-  tests use a temp/in-memory SQLite. New broker/AI/service logic should follow
+- Tests must not hit the network — brokers and market data are mocked, and DB
+  tests use a temp/in-memory SQLite. New broker/service logic should follow
   this (the thorough coverage to date is XIRR, the status classifier, and the
   API routes).
 - Secrets stay server-side and out of git (`.env`, `*.db` are gitignored).

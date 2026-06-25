@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { getAccounts, createAccount, syncAccount, getAuthStatus, getLoginUrl, createSession, addShares, getFreeCash, setFreeCash } from '../api/endpoints'
+import { getAccounts, createAccount, syncAccount, getAuthStatus, getLoginUrl, createSession, addShares, sellShares, getFreeCash, setFreeCash } from '../api/endpoints'
 import type { AccountCreate } from '../api/types'
 
 export function useFreeCash(accountId: string) {
@@ -38,6 +38,22 @@ export function useAddShares() {
     mutationFn: ({ accountId, ...data }: AddSharesInput) => addShares(accountId, data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['holdings'] })
+      qc.invalidateQueries({ queryKey: ['portfolio-summary'] })
+    },
+  })
+}
+
+// Reuses AddSharesInput — same shape (symbol/qty/price/date), sell semantics.
+type SellSharesInput = AddSharesInput
+
+export function useSellShares() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ accountId, ...data }: SellSharesInput) => sellShares(accountId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['holdings'] })
+      // A full sale moves the position to the Exited view, so refresh that too.
+      qc.invalidateQueries({ queryKey: ['holdings-exited'] })
       qc.invalidateQueries({ queryKey: ['portfolio-summary'] })
     },
   })

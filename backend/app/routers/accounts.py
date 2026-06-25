@@ -286,6 +286,127 @@ def add_shares(
 
 
 # ------------------------------------------------------------------
+# Record a sale the tradebook is missing: reduces (or fully closes) a
+# holding and books realized P&L, then re-derives holdings. The sell-side
+# counterpart of add-shares.
+# ------------------------------------------------------------------
+
+class SellSharesRequest(BaseModel):
+    symbol: str
+    exchange: str = "NSE"
+    quantity: float          # number of shares sold
+    price: float             # per-share sale price
+    trade_date: str          # YYYY-MM-DD
+    isin: Optional[str] = None
+
+
+class SellSharesResponse(BaseModel):
+    message: str
+    holdings_synced: int
+    prices_refreshed: int
+    realized_pnl: float       # P&L booked by THIS sale: qty * (price − avg cost)
+
+
+@router.post("/{account_id}/sell-shares", response_model=SellSharesResponse)
+def sell_shares(
+    account_id: int,
+    body: SellSharesRequest,
+    db: Session = Depends(get_db),
+):
+    """Record a sale and re-derive holdings.
+
+    The sell-side counterpart of :func:`add_shares`: writes a ``sell``
+    Transaction (the same row a tradebook import would create), then re-derives
+    holdings via the shared moving-average logic — so the position's quantity
+    drops, its average cost is left unchanged, and a fully-sold position moves to
+    the *Exited* view with its realized P&L. The P&L booked by *this* sale
+    (``qty × (price − average cost)``) is returned for immediate feedback.
+
+    You can only sell what the account currently holds; selling more than the
+    derived quantity is rejected (add the missing buy first via add-shares).
+    """
+    from datetime import date as _date
+
+    from app.models.holding import Holding
+
+    account = db.get(Account, account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"Account {account_id} not found")
+
+    symbol = body.symbol.strip().upper()
+    if not symbol:
+        raise HTTPException(status_code=400, detail="symbol is required")
+    if body.quantity <= 0:
+        raise HTTPException(status_code=400, detail="quantity must be positive")
+    if body.price < 0:
+        raise HTTPException(status_code=400, detail="price cannot be negative")
+    try:
+        tx_date = _date.fromisoformat(body.trade_date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="trade_date must be YYYY-MM-DD")
+
+    # Sell against the current derived holding. Match on symbol alone: holdings
+    # are netted per instrument (fungible across exchanges) and Holding.symbol is
+    # always stored upper-cased by the derivation, so this is an exact match.
+    held = (
+        db.query(Holding)
+        .filter(Holding.account_id == account_id, Holding.symbol == symbol)
+        .first()
+    )
+    if held is None or held.quantity <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"You don't currently hold any {symbol} to sell.",
+        )
+    if body.quantity > held.quantity + 1e-9:
+        raise HTTPException(
+            status_code=400,
+            detail=f"You hold {held.quantity:g} {symbol}; cannot sell {body.quantity:g}.",
+        )
+
+    # Realized P&L is booked at the average cost held BEFORE this sale.
+    realized_pnl = round(body.quantity * (body.price - held.average_price), 2)
+
+    db.add(Transaction(
+        account_id=account_id,
+        symbol=symbol,
+        exchange=body.exchange.strip().upper() or "NSE",
+        # Carry the instrument's ISIN so the netting groups this sell with the
+        # rest of the position even if the symbol was later renamed.
+        isin=(body.isin.strip().upper() if body.isin else (held.isin or None)),
+        trade_type="sell",
+        quantity=body.quantity,
+        price=body.price,
+        amount=round(body.quantity * body.price, 2),
+        fees=0.0,
+        trade_date=tx_date,
+    ))
+    db.commit()
+
+    try:
+        holdings = derive_holdings_from_transactions(db, account_id)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Holdings derivation failed: {exc}")
+
+    prices_refreshed = 0
+    try:
+        prices_refreshed = refresh_prices(db, account_id)
+    except RuntimeError:
+        pass  # market provider down — holdings still updated
+
+    outcome = "gain" if realized_pnl >= 0 else "loss"
+    return {
+        "message": (
+            f"Sold {body.quantity:g} {symbol} @ ₹{body.price:g} "
+            f"(realized {outcome} ₹{abs(realized_pnl):,.2f}); holdings re-derived."
+        ),
+        "holdings_synced": len(holdings),
+        "prices_refreshed": prices_refreshed,
+        "realized_pnl": realized_pnl,
+    }
+
+
+# ------------------------------------------------------------------
 # Free cash (manual override of the stale funds-ledger balance)
 # ------------------------------------------------------------------
 

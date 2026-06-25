@@ -4,6 +4,7 @@ Watchlist router.
 GET    /api/watchlist
 POST   /api/watchlist
 PUT    /api/watchlist/{id}/entry-zone
+PUT    /api/watchlist/{id}/plan
 DELETE /api/watchlist/{id}
 """
 from typing import Optional
@@ -12,11 +13,17 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models.watchlist import WatchlistEntryZone, WatchlistItem, WatchlistPosition
+from app.models.watchlist import (
+    WatchlistEntryZone,
+    WatchlistItem,
+    WatchlistPlan,
+    WatchlistPosition,
+)
 from app.schemas.watchlist import (
     WatchlistEntryZoneUpdate,
     WatchlistItemCreate,
     WatchlistItemRead,
+    WatchlistPlanUpdate,
     WatchlistReorder,
 )
 
@@ -35,6 +42,14 @@ def _normalize_zone(
     return low, high
 
 
+def _clean_text(value: Optional[str]) -> Optional[str]:
+    """Trim free-text; treat blank as unset (None)."""
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
 @router.get("", response_model=list[WatchlistItemRead])
 def list_watchlist(db: Session = Depends(get_db)):
     """Return all watchlist items, ordered by manual position (top first).
@@ -51,7 +66,8 @@ def list_watchlist(db: Session = Depends(get_db)):
 
 @router.post("", response_model=WatchlistItemRead, status_code=201)
 def add_watchlist_item(body: WatchlistItemCreate, db: Session = Depends(get_db)):
-    """Add a symbol to the watchlist, optionally with a buy entry zone."""
+    """Add a symbol to the watchlist, optionally with a buy entry zone and
+    trade-plan notes (catalyst + exit-when)."""
     item = WatchlistItem(
         symbol=body.symbol.upper(),
         exchange=body.exchange.upper(),
@@ -60,6 +76,10 @@ def add_watchlist_item(body: WatchlistItemCreate, db: Session = Depends(get_db))
     low, high = _normalize_zone(body.entry_low, body.entry_high)
     if low is not None or high is not None:
         item.entry_zone = WatchlistEntryZone(low=low, high=high)
+    catalyst = _clean_text(body.catalyst)
+    exit_when = _clean_text(body.exit_when)
+    if catalyst is not None or exit_when is not None:
+        item.plan = WatchlistPlan(catalyst=catalyst, exit_when=exit_when)
     db.add(item)
     db.commit()
     db.refresh(item)
@@ -88,6 +108,33 @@ def set_entry_zone(
     else:
         item.entry_zone.low = low
         item.entry_zone.high = high
+
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+@router.put("/{item_id}/plan", response_model=WatchlistItemRead)
+def set_plan(item_id: int, body: WatchlistPlanUpdate, db: Session = Depends(get_db)):
+    """Set, update, or clear an item's trade-plan notes (catalyst + exit-when).
+
+    Passing both fields blank/null removes the plan.
+    """
+    item = db.get(WatchlistItem, item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"Watchlist item {item_id} not found")
+
+    catalyst = _clean_text(body.catalyst)
+    exit_when = _clean_text(body.exit_when)
+
+    if catalyst is None and exit_when is None:
+        # Clear — delete-orphan removes the row on commit.
+        item.plan = None
+    elif item.plan is None:
+        item.plan = WatchlistPlan(catalyst=catalyst, exit_when=exit_when)
+    else:
+        item.plan.catalyst = catalyst
+        item.plan.exit_when = exit_when
 
     db.commit()
     db.refresh(item)

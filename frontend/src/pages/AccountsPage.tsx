@@ -9,7 +9,6 @@ import {
   useFreeCash,
   useSetFreeCash,
 } from '../hooks/useAccounts'
-import { useAIProviders } from '../hooks/useInsights'
 import { useMarketProviders, useRefreshPrices } from '../hooks/useMarket'
 import { importTransactions, importLedger } from '../api/endpoints'
 import LoadingState from '../components/ui/LoadingState'
@@ -564,33 +563,19 @@ function AddAccountForm() {
   )
 }
 
-// Provider status list (AI + market data)
+// Provider status (market data only). The AI features are prompt-only — the app
+// calls no AI model, so there is no AI provider to configure.
 function ProviderStatus() {
-  const aiQ = useAIProviders()
   const marketQ = useMarketProviders()
 
   return (
     <>
       <div className="card" style={{ marginTop: 20 }}>
-        <div className="card-title">AI Providers</div>
-        {aiQ.isLoading && <LoadingState />}
-        {aiQ.isError && <ErrorState error={aiQ.error} />}
-        {aiQ.data && (
-          <div className="provider-list">
-            {aiQ.data.map((p) => (
-              <div key={p.name} className="provider-item">
-                <span className={`provider-dot ${p.active && p.configured ? 'active' : 'inactive'}`} />
-                <span className="provider-name">{p.name}</span>
-                <span className="provider-status">
-                  {p.configured ? (p.active ? 'Active' : 'Configured') : 'Not configured'}
-                </span>
-              </div>
-            ))}
-            {aiQ.data.length === 0 && (
-              <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>No AI providers registered.</p>
-            )}
-          </div>
-        )}
+        <div className="card-title">AI insights</div>
+        <p style={{ fontSize: 13, color: 'var(--text-muted)', margin: 0 }}>
+          No AI key needed. The dashboard's suggestions and review build a prompt you run in your
+          own ChatGPT/Claude — it researches and returns JSON you paste back.
+        </p>
       </div>
 
       <div className="card" style={{ marginTop: 16 }}>

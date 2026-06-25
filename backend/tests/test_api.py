@@ -365,6 +365,70 @@ class TestWatchlist:
         resp = client.put("/api/watchlist/9999/entry-zone", json={"entry_low": 10})
         assert resp.status_code == 404
 
+    def test_add_with_plan(self, client):
+        data = client.post("/api/watchlist", json={
+            "symbol": "INFY",
+            "exchange": "NSE",
+            "catalyst": "Q3 results beat",
+            "exit_when": "Falls below 200-DMA",
+        }).json()
+        assert data["catalyst"] == "Q3 results beat"
+        assert data["exit_when"] == "Falls below 200-DMA"
+
+    def test_add_without_plan_has_null_fields(self, client):
+        data = client.post("/api/watchlist", json={"symbol": "WIPRO"}).json()
+        assert data["catalyst"] is None
+        assert data["exit_when"] is None
+
+    def test_set_plan(self, client):
+        item = client.post("/api/watchlist", json={"symbol": "TCS"}).json()
+        resp = client.put(f"/api/watchlist/{item['id']}/plan", json={
+            "catalyst": "New order win",
+            "exit_when": "Margin guidance cut",
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["catalyst"] == "New order win"
+        assert data["exit_when"] == "Margin guidance cut"
+        # Persisted on the list read too.
+        listed = next(i for i in client.get("/api/watchlist").json() if i["id"] == item["id"])
+        assert listed["catalyst"] == "New order win"
+
+    def test_set_plan_partial(self, client):
+        item = client.post("/api/watchlist", json={"symbol": "ITC"}).json()
+        resp = client.put(f"/api/watchlist/{item['id']}/plan", json={
+            "catalyst": "Demerger value unlock",
+        })
+        assert resp.status_code == 200
+        assert resp.json()["catalyst"] == "Demerger value unlock"
+        assert resp.json()["exit_when"] is None
+
+    def test_clear_plan(self, client):
+        item = client.post("/api/watchlist", json={
+            "symbol": "SBIN", "catalyst": "Credit growth", "exit_when": "NPA spike",
+        }).json()
+        resp = client.put(f"/api/watchlist/{item['id']}/plan", json={
+            "catalyst": None, "exit_when": None,
+        })
+        assert resp.status_code == 200
+        assert resp.json()["catalyst"] is None
+        assert resp.json()["exit_when"] is None
+
+    def test_plan_blank_strings_clear(self, client):
+        item = client.post("/api/watchlist", json={
+            "symbol": "HDFC", "catalyst": "Merger synergies",
+        }).json()
+        resp = client.put(f"/api/watchlist/{item['id']}/plan", json={
+            "catalyst": "   ", "exit_when": "",
+        })
+        assert resp.status_code == 200
+        assert resp.json()["catalyst"] is None
+        assert resp.json()["exit_when"] is None
+
+    def test_set_plan_not_found(self, client):
+        resp = client.put("/api/watchlist/9999/plan", json={"catalyst": "x"})
+        assert resp.status_code == 404
+
     def test_reorder(self, client):
         a = client.post("/api/watchlist", json={"symbol": "AAA"}).json()
         b = client.post("/api/watchlist", json={"symbol": "BBB"}).json()
@@ -392,57 +456,11 @@ class TestWatchlist:
         listed = client.get("/api/watchlist").json()
         assert listed[0]["symbol"] == "NEW"
 
-
 # -----------------------------------------------------------------------
-# AI Providers
-# -----------------------------------------------------------------------
-
-class TestAIProviders:
-    def test_list_providers(self, client):
-        response = client.get("/api/ai/providers")
-        assert response.status_code == 200
-        data = response.json()
-        assert isinstance(data, list)
-        names = [p["name"] for p in data]
-        assert "openai" in names
-        assert "claude" in names
-        for p in data:
-            assert "active" in p
-            assert "configured" in p
-
-    def test_insights_503_when_no_api_key(self, client, monkeypatch):
-        """AI endpoints must return 503 when the provider is unavailable.
-
-        Force ``get_provider`` to ``None`` so this is hermetic — it must hold
-        regardless of whether a real API key happens to be set in the dev env,
-        and it must never make a live API/web-search call from the test suite.
-        """
-        import app.services.insights as insights_service
-
-        monkeypatch.setattr(insights_service.ai_registry, "get_provider", lambda: None)
-        response = client.post(
-            "/api/insights/watchlist-suggestions",
-            json={"count": 3},
-        )
-        assert response.status_code == 503
-
-
-# -----------------------------------------------------------------------
-# Portfolio review (AI analysis of holdings + watchlist vs FY goal)
+# AI insights — PROMPT-ONLY (the app emits a prompt; it never calls an AI model)
 # -----------------------------------------------------------------------
 
-
-class _FakeProvider:
-    """Stand-in AIProvider that echoes a fixed structured payload."""
-
-    def __init__(self, payload):
-        self._payload = payload
-
-    def complete(self, system, user, json_schema=None):
-        return self._payload
-
-
-class TestPortfolioReview:
+class TestInsightPrompts:
     def test_current_fy_label(self):
         from datetime import date
         from app.services.insights import current_fy_label
@@ -450,250 +468,49 @@ class TestPortfolioReview:
         assert current_fy_label(date(2026, 6, 4)) == "2026-27"   # mid-FY
         assert current_fy_label(date(2026, 4, 1)) == "2026-27"   # FY start
         assert current_fy_label(date(2026, 3, 31)) == "2025-26"  # FY end
-        assert current_fy_label(date(2026, 2, 10)) == "2025-26"  # Jan–Mar
 
-    def test_review_success(self, client, monkeypatch):
-        import app.services.insights as insights_service
-
+    def test_watchlist_prompt_no_api_key_needed(self, client):
         client.post("/api/watchlist", json={"symbol": "INFY", "exchange": "NSE", "note": ""})
 
-        payload = {
-            "answer": "Lean into your watchlist quality names.",
-            "portfolio_commentary": "Goal is a stretch from here.",
-            "recommendations": [
-                {
-                    "symbol": "INFY", "exchange": "NSE", "position": "WATCHLIST",
-                    "action": "BUY", "conviction": 0.8, "rationale": "Quality compounder.",
-                },
-            ],
-        }
-        monkeypatch.setattr(
-            insights_service.ai_registry, "get_provider", lambda: _FakeProvider(payload)
+        resp = client.post("/api/insights/watchlist-suggestions/prompt", json={"count": 7})
+        assert resp.status_code == 200  # NOT 503 — no AI key required
+        prompt = resp.json()["prompt"]
+        # The prompt tells the model to run its OWN subagents + fetch Yahoo Finance.
+        assert "SUBAGENTS" in prompt.upper()
+        assert "Yahoo Finance" in prompt
+        # Carries the count, the schema, the buckets, and the watched symbol to avoid.
+        assert "7-name" in prompt
+        assert "JSON schema" in prompt and "SWAP_CANDIDATE" in prompt
+        assert "INFY" in prompt
+
+    def test_review_prompt_no_api_key_needed(self, client):
+        resp = client.post(
+            "/api/insights/portfolio-review/prompt", json={"target_profit_pct": 60}
         )
-        # Don't hit the network for watchlist quotes.
-        monkeypatch.setattr(insights_service, "_fetch_quotes", lambda items: {})
+        assert resp.status_code == 200
+        prompt = resp.json()["prompt"]
+        assert "SUBAGENTS" in prompt.upper()
+        assert "Yahoo Finance" in prompt
+        assert "JSON schema" in prompt and "recommendations" in prompt
+        # Free-cash sizing + entry/exit hints + the FY target are part of the prompt.
+        assert "FREE CASH" in prompt
+        assert "entry_hint" in prompt and "exit_hint" in prompt
+        assert "60%" in prompt
 
-        response = client.post(
-            "/api/insights/portfolio-review", json={"target_profit_pct": 75}
-        )
-        assert response.status_code == 200
-        data = response.json()
-        assert data["target_profit_pct"] == 75
-        assert data["fy"]  # FY label injected by the service
-        assert data["answer"] == "Lean into your watchlist quality names."
-        assert data["portfolio_commentary"] == "Goal is a stretch from here."
-        assert data["recommendations"][0]["action"] == "BUY"
-        assert data["recommendations"][0]["symbol"] == "INFY"
-
-    def test_review_follow_up_question(self, client, monkeypatch):
-        """A conversation transcript is passed through; the last user turn is the question."""
-        import app.services.insights as insights_service
-
-        captured = {}
-
-        class _CapturingProvider:
-            def complete(self, system, user, json_schema=None):
-                captured["user"] = user
-                return {
-                    "answer": "Understood — keeping LICI.",
-                    "portfolio_commentary": "Revised plan.",
-                    "recommendations": [],
-                }
-
-        monkeypatch.setattr(
-            insights_service.ai_registry, "get_provider", lambda: _CapturingProvider()
-        )
-        monkeypatch.setattr(insights_service, "_fetch_quotes", lambda items: {})
-
-        response = client.post(
-            "/api/insights/portfolio-review",
-            json={
-                "target_profit_pct": 75,
-                "messages": [{"role": "user", "content": "Do not sell LICI, what else?"}],
-            },
-        )
-        assert response.status_code == 200
-        assert response.json()["answer"] == "Understood — keeping LICI."
-        # The question must reach the prompt.
-        assert "Do not sell LICI" in captured["user"]
-        # New: free cash + entry/exit-hint guidance are part of the review prompt.
-        assert "FREE CASH to deploy" in captured["user"]
-        assert "entry_hint" in captured["user"]
-        assert "exit_hint" in captured["user"]
-
-    def test_review_503_when_no_provider(self, client, monkeypatch):
-        import app.services.insights as insights_service
-
-        monkeypatch.setattr(insights_service.ai_registry, "get_provider", lambda: None)
-        response = client.post("/api/insights/portfolio-review", json={})
-        assert response.status_code == 503
-
-    def test_web_research_injected_into_prompt(self, client, monkeypatch):
-        """When the provider supports web search, its brief is fed into the review prompt."""
-        import app.services.insights as insights_service
-
-        client.post("/api/watchlist", json={"symbol": "INFY", "exchange": "NSE", "note": ""})
-
-        captured = {}
-
-        class _WebProvider:
-            def web_search(self, system, user, max_uses=6):
-                captured["search_user"] = user
-                return "INFY: new large deal win, analysts turning bullish (as of May)."
-
-            def complete(self, system, user, json_schema=None):
-                captured["review_user"] = user
-                return {"answer": "ok", "portfolio_commentary": "c", "recommendations": []}
-
-        monkeypatch.setattr(insights_service.ai_registry, "get_provider", lambda: _WebProvider())
-        monkeypatch.setattr(insights_service, "_fetch_quotes", lambda items: {})
-        monkeypatch.setattr(insights_service.ai_registry.settings, "AI_WEB_SEARCH", True)
-
-        response = client.post("/api/insights/portfolio-review", json={"target_profit_pct": 50})
-        assert response.status_code == 200
-        # The web brief reached the structured review prompt under a DEEP RESEARCH header.
-        assert "DEEP RESEARCH" in captured["review_user"]
-        # The research ask now demands annual-report / results fundamentals, not just news.
-        assert "ANNUAL REPORT" in captured["search_user"].upper()
-        assert "FUNDAMENTALS" in captured["search_user"].upper()
-        assert "analysts turning bullish" in captured["review_user"]
-        # And the symbol was part of what we asked the search to research.
-        assert "INFY" in captured["search_user"]
-
-    def test_web_research_skipped_on_followup(self, client, monkeypatch):
-        """Follow-up chat turns must not trigger a fresh web search."""
-        import app.services.insights as insights_service
-
-        calls = {"search": 0}
-
-        class _WebProvider:
-            def web_search(self, system, user, max_uses=6):
-                calls["search"] += 1
-                return "should not be called"
-
-            def complete(self, system, user, json_schema=None):
-                return {"answer": "a", "portfolio_commentary": "c", "recommendations": []}
-
-        monkeypatch.setattr(insights_service.ai_registry, "get_provider", lambda: _WebProvider())
-        monkeypatch.setattr(insights_service, "_fetch_quotes", lambda items: {})
-        monkeypatch.setattr(insights_service.ai_registry.settings, "AI_WEB_SEARCH", True)
-
-        response = client.post(
-            "/api/insights/portfolio-review",
-            json={"messages": [{"role": "user", "content": "what about IT stocks?"}]},
-        )
-        assert response.status_code == 200
-        assert calls["search"] == 0
-
-    def test_web_research_graceful_when_search_errors(self, client, monkeypatch):
-        """A failing web_search must not break the review (degrades to no web context)."""
-        import app.services.insights as insights_service
-
-        class _BoomProvider:
-            def web_search(self, system, user, max_uses=6):
-                raise RuntimeError("search backend down")
-
-            def complete(self, system, user, json_schema=None):
-                return {"answer": "still works", "portfolio_commentary": "c", "recommendations": []}
-
-        monkeypatch.setattr(insights_service.ai_registry, "get_provider", lambda: _BoomProvider())
-        monkeypatch.setattr(insights_service, "_fetch_quotes", lambda items: {})
-        monkeypatch.setattr(insights_service.ai_registry.settings, "AI_WEB_SEARCH", True)
-
-        response = client.post("/api/insights/portfolio-review", json={})
-        assert response.status_code == 200
-        assert response.json()["answer"] == "still works"
-
-    def test_base_provider_web_search_returns_none(self):
-        from app.ai.base import AIProvider
-
-        class _Min(AIProvider):
-            def complete(self, system, user, json_schema=None):
-                return "x"
-
-        assert _Min().web_search("s", "u") is None
-
-
-class TestWatchlistSuggestionsWebSearch:
-    def test_movers_and_research_injected(self, client, monkeypatch):
-        """Watchlist suggestions inject structured top movers + a web-research
-        brief into the suggestion prompt."""
-        import app.services.insights as insights_service
-
-        captured = {}
-
-        class _WebProvider:
-            def web_search(self, system, user, max_uses=6):
-                captured["search_system"] = system
-                captured["search_user"] = user
-                return "ABC — up 12% on a large order win; strong forward outlook."
-
-            def complete(self, system, user, json_schema=None):
-                captured["suggest_user"] = user
-                return {"suggestions": [
-                    {"symbol": "ABC", "exchange": "NSE", "bucket": "TACTICAL",
-                     "rationale": "Order win catalyst.", "risk": "HIGH", "horizon": "1-2 quarters",
-                     "catalyst": "Large order win", "exit_trigger": "After Q2 results", "replaces": None},
-                ], "flagged_holdings": []}
-
-        monkeypatch.setattr(insights_service.ai_registry, "get_provider", lambda: _WebProvider())
-        monkeypatch.setattr(insights_service.ai_registry.settings, "AI_WEB_SEARCH", True)
-        # All structured idea pools come from the market provider — mock (no network).
-        monkeypatch.setattr(
-            insights_service, "_fetch_movers",
-            lambda count=10: {"gainers": [{"symbol": "MOV", "exchange": "NSE",
-                                           "change_pct": 5.0, "name": "Mover Co"}], "losers": []},
-        )
-        monkeypatch.setattr(
-            insights_service, "_fetch_sector_leaders",
-            lambda: [{"symbol": "SECLEAD", "exchange": "NSE", "sector": "Technology"}],
-        )
-        monkeypatch.setattr(
-            insights_service, "_fetch_growth_leaders",
-            lambda: [{"symbol": "GROWCO", "exchange": "NSE"}],
-        )
-        monkeypatch.setattr(
-            insights_service, "_fetch_industry_peers",
-            lambda industries, exclude: {"Information Technology Services": [{"symbol": "PEERCO"}]},
-        )
-
-        response = client.post("/api/insights/watchlist-suggestions", json={"count": 3})
-        assert response.status_code == 200
-        assert response.json()["suggestions"][0]["symbol"] == "ABC"
-        # The research focuses on catalysts now (gainers/losers are structured).
-        # Research now deep-digs catalysts AND annual-report fundamentals.
-        sysu = captured["search_system"].upper()
-        assert "CATALYST" in sysu and "ANNUAL REPORT" in sysu
-        # All idea pools and the web brief reached the suggestion prompt.
-        u = captured["suggest_user"]
-        assert "TOP MOVERS" in u and "MOV" in u
-        assert "SECTOR LEADERS" in u and "SECLEAD" in u
-        assert "HIGH-GROWTH COMPANIES" in u and "GROWCO" in u
-        assert "COMPETITIVE SET" in u and "PEERCO" in u
-        assert "DEEP RESEARCH" in u
-
-    def test_suggestions_work_without_web_search(self, client, monkeypatch):
-        """When the provider has no web search, suggestions still come back."""
-        import app.services.insights as insights_service
-
-        class _PlainProvider:
-            def complete(self, system, user, json_schema=None):
-                return {"suggestions": [
-                    {"symbol": "DEF", "exchange": "NSE", "rationale": "Quality compounder."},
-                ]}
-
-        monkeypatch.setattr(insights_service.ai_registry, "get_provider", lambda: _PlainProvider())
-        monkeypatch.setattr(insights_service.ai_registry.settings, "AI_WEB_SEARCH", True)
-        monkeypatch.setattr(
-            insights_service, "_fetch_movers", lambda count=10: {"gainers": [], "losers": []}
-        )
-        monkeypatch.setattr(insights_service, "_fetch_sector_leaders", lambda: [])
-        monkeypatch.setattr(insights_service, "_fetch_growth_leaders", lambda: [])
-        monkeypatch.setattr(insights_service, "_fetch_industry_peers", lambda industries, exclude: {})
-
-        response = client.post("/api/insights/watchlist-suggestions", json={"count": 2})
-        assert response.status_code == 200
-        assert response.json()["suggestions"][0]["symbol"] == "DEF"
+    def test_direct_api_and_batch_routes_are_gone(self, client):
+        # Prompt-only app: the AI-calling, batch, and providers routes were removed.
+        assert client.post(
+            "/api/insights/watchlist-suggestions", json={"count": 3}
+        ).status_code == 404
+        assert client.post(
+            "/api/insights/recommendation", json={"symbol": "INFY"}
+        ).status_code == 404
+        assert client.get("/api/insights/analysis/INFY").status_code == 404
+        assert client.post("/api/insights/portfolio-review", json={}).status_code == 404
+        assert client.post(
+            "/api/insights/portfolio-review/batch", json={}
+        ).status_code == 404
+        assert client.get("/api/ai/providers").status_code == 404
 
 
 # -----------------------------------------------------------------------
@@ -724,3 +541,210 @@ class TestCSVImportDedup:
         # Only one transaction should exist
         txns = client.get(f"/api/transactions?account_id={account['id']}").json()
         assert len(txns) == 1
+
+
+# -----------------------------------------------------------------------
+# Record a sale (POST /accounts/{id}/sell-shares)
+# -----------------------------------------------------------------------
+
+class TestSellShares:
+    """The manual-sell flow: write a sell, re-derive holdings, book realized P&L.
+
+    ``refresh_prices`` (the only network touch) is stubbed so tests stay offline.
+    Each holding is first established via the sibling /add-shares endpoint.
+    """
+
+    def _setup(self, client, monkeypatch):
+        import app.routers.accounts as accounts_router
+        monkeypatch.setattr(accounts_router, "refresh_prices", lambda db, aid: 0)
+        return client.post("/api/accounts", json={"label": "M", "broker": "manual"}).json()["id"]
+
+    def _buy(self, client, aid, symbol, qty, price, when="2024-01-01"):
+        return client.post(f"/api/accounts/{aid}/add-shares", json={
+            "symbol": symbol, "exchange": "NSE",
+            "quantity": qty, "price": price, "trade_date": when,
+        })
+
+    def test_partial_sell_reduces_qty_keeps_avg(self, client, monkeypatch):
+        aid = self._setup(client, monkeypatch)
+        self._buy(client, aid, "TCS", 10, 100)
+
+        # Sell 4 @ ₹150 → realized = 4 × (150 − 100) = 200.
+        r = client.post(f"/api/accounts/{aid}/sell-shares", json={
+            "symbol": "tcs", "exchange": "NSE",  # lower-case symbol is normalised
+            "quantity": 4, "price": 150, "trade_date": "2024-06-01",
+        })
+        assert r.status_code == 200
+        assert r.json()["realized_pnl"] == 200.0
+
+        holdings = client.get(f"/api/holdings?account_id={aid}").json()
+        tcs = next(h for h in holdings if h["symbol"] == "TCS")
+        assert tcs["quantity"] == 6          # 10 − 4
+        assert tcs["average_price"] == 100   # a sell leaves the average unchanged
+
+    def test_full_sell_moves_to_exited(self, client, monkeypatch):
+        aid = self._setup(client, monkeypatch)
+        self._buy(client, aid, "INFY", 5, 200)
+
+        r = client.post(f"/api/accounts/{aid}/sell-shares", json={
+            "symbol": "INFY", "exchange": "NSE",
+            "quantity": 5, "price": 250, "trade_date": "2024-06-01",
+        })
+        assert r.status_code == 200
+        assert r.json()["realized_pnl"] == 250.0  # 5 × (250 − 200)
+
+        holdings = client.get(f"/api/holdings?account_id={aid}").json()
+        assert all(h["symbol"] != "INFY" for h in holdings)  # no longer held
+
+        exited = client.get(f"/api/holdings/exited?account_id={aid}").json()
+        infy = next(e for e in exited if e["symbol"] == "INFY")
+        assert infy["realized_pnl"] == 250.0
+
+    def test_cannot_oversell(self, client, monkeypatch):
+        aid = self._setup(client, monkeypatch)
+        self._buy(client, aid, "WIPRO", 3, 50)
+        r = client.post(f"/api/accounts/{aid}/sell-shares", json={
+            "symbol": "WIPRO", "exchange": "NSE",
+            "quantity": 10, "price": 60, "trade_date": "2024-06-01",
+        })
+        assert r.status_code == 400
+
+    def test_cannot_sell_unheld_symbol(self, client, monkeypatch):
+        aid = self._setup(client, monkeypatch)
+        r = client.post(f"/api/accounts/{aid}/sell-shares", json={
+            "symbol": "NOPE", "exchange": "NSE",
+            "quantity": 1, "price": 10, "trade_date": "2024-06-01",
+        })
+        assert r.status_code == 400
+
+    def test_account_not_found(self, client, monkeypatch):
+        self._setup(client, monkeypatch)
+        r = client.post("/api/accounts/9999/sell-shares", json={
+            "symbol": "TCS", "exchange": "NSE",
+            "quantity": 1, "price": 10, "trade_date": "2024-06-01",
+        })
+        assert r.status_code == 404
+
+
+# -----------------------------------------------------------------------
+# View / modify a holding's unit details (transaction CRUD)
+# POST/PUT/DELETE /api/transactions + symbol-group GET
+# -----------------------------------------------------------------------
+
+class TestTransactionCrud:
+    """The single-trade CRUD behind a holding: add/edit/delete a buy/sell/bonus
+    and the account's holdings re-derive. ``refresh_prices`` (the only network
+    touch) is stubbed so tests stay offline.
+    """
+
+    def _setup(self, client, monkeypatch):
+        import app.routers.transactions as tx_router
+        monkeypatch.setattr(tx_router, "refresh_prices", lambda db, aid: 0)
+        return client.post("/api/accounts", json={"label": "M", "broker": "manual"}).json()["id"]
+
+    def _add(self, client, aid, symbol, ttype, qty, price, when="2024-01-01", isin=None):
+        return client.post("/api/transactions", json={
+            "account_id": aid, "symbol": symbol, "exchange": "NSE",
+            "trade_type": ttype, "quantity": qty, "price": price,
+            "trade_date": when, "isin": isin,
+        })
+
+    def test_create_derives_holding(self, client, monkeypatch):
+        aid = self._setup(client, monkeypatch)
+        r = self._add(client, aid, "tcs", "buy", 10, 100)  # lower-case normalised
+        assert r.status_code == 201
+        body = r.json()
+        assert body["transaction"]["symbol"] == "TCS"
+        assert body["transaction"]["amount"] == 1000.0  # qty × price, server-derived
+
+        holdings = client.get(f"/api/holdings?account_id={aid}").json()
+        tcs = next(h for h in holdings if h["symbol"] == "TCS")
+        assert tcs["quantity"] == 10
+        assert tcs["average_price"] == 100
+
+    def test_bonus_is_free_and_dilutes_average(self, client, monkeypatch):
+        aid = self._setup(client, monkeypatch)
+        self._add(client, aid, "INFY", "buy", 10, 100)
+        # A bonus carries no cost even if a price is sent — amount is forced to 0.
+        r = self._add(client, aid, "INFY", "bonus", 10, 999)
+        assert r.json()["transaction"]["amount"] == 0.0
+
+        holdings = client.get(f"/api/holdings?account_id={aid}").json()
+        infy = next(h for h in holdings if h["symbol"] == "INFY")
+        assert infy["quantity"] == 20
+        assert infy["average_price"] == 50  # 1000 cost / 20 shares
+
+    def test_edit_changes_holding(self, client, monkeypatch):
+        aid = self._setup(client, monkeypatch)
+        tx_id = self._add(client, aid, "WIPRO", "buy", 10, 100).json()["transaction"]["id"]
+
+        r = client.put(f"/api/transactions/{tx_id}", json={"quantity": 25, "price": 80})
+        assert r.status_code == 200
+        assert r.json()["transaction"]["amount"] == 2000.0  # recomputed 25 × 80
+
+        holdings = client.get(f"/api/holdings?account_id={aid}").json()
+        wipro = next(h for h in holdings if h["symbol"] == "WIPRO")
+        assert wipro["quantity"] == 25
+        assert wipro["average_price"] == 80
+
+    def test_delete_rederives_and_can_empty_holding(self, client, monkeypatch):
+        aid = self._setup(client, monkeypatch)
+        keep = self._add(client, aid, "SBIN", "buy", 5, 200, when="2024-01-01").json()["transaction"]["id"]
+        drop = self._add(client, aid, "SBIN", "buy", 5, 400, when="2024-02-01").json()["transaction"]["id"]
+
+        # Two lots → avg 300. Drop the pricey lot → only the 5 @ 200 remains.
+        r = client.delete(f"/api/transactions/{drop}")
+        assert r.status_code == 200
+        holdings = client.get(f"/api/holdings?account_id={aid}").json()
+        sbin = next(h for h in holdings if h["symbol"] == "SBIN")
+        assert sbin["quantity"] == 5
+        assert sbin["average_price"] == 200
+
+        # Delete the last lot → the holding disappears entirely.
+        client.delete(f"/api/transactions/{keep}")
+        holdings = client.get(f"/api/holdings?account_id={aid}").json()
+        assert all(h["symbol"] != "SBIN" for h in holdings)
+
+    def test_symbol_filter_returns_only_that_holdings_group(self, client, monkeypatch):
+        aid = self._setup(client, monkeypatch)
+        self._add(client, aid, "TCS", "buy", 10, 100)
+        self._add(client, aid, "TCS", "sell", 3, 150, when="2024-03-01")
+        self._add(client, aid, "INFY", "buy", 7, 200)
+
+        rows = client.get(f"/api/transactions?account_id={aid}&symbol=tcs").json()
+        assert {row["symbol"] for row in rows} == {"TCS"}
+        assert len(rows) == 2  # the buy and the sell, not INFY
+
+    def test_symbol_filter_follows_rename_via_isin(self, client, monkeypatch):
+        aid = self._setup(client, monkeypatch)
+        # Same instrument, renamed ticker, linked by a shared ISIN.
+        self._add(client, aid, "ZOMATO", "buy", 10, 50, isin="INE758T01015")
+        self._add(client, aid, "ETERNAL", "buy", 5, 60, when="2024-05-01", isin="INE758T01015")
+
+        rows = client.get(f"/api/transactions?account_id={aid}&symbol=ETERNAL").json()
+        assert {row["symbol"] for row in rows} == {"ZOMATO", "ETERNAL"}  # one group
+
+    def test_create_rejects_bad_trade_type(self, client, monkeypatch):
+        aid = self._setup(client, monkeypatch)
+        r = self._add(client, aid, "TCS", "dividend", 1, 10)
+        assert r.status_code == 400
+
+    def test_create_rejects_nonpositive_quantity(self, client, monkeypatch):
+        aid = self._setup(client, monkeypatch)
+        r = self._add(client, aid, "TCS", "buy", 0, 10)
+        assert r.status_code == 400
+
+    def test_create_account_not_found(self, client, monkeypatch):
+        self._setup(client, monkeypatch)
+        r = self._add(client, 9999, "TCS", "buy", 1, 10)
+        assert r.status_code == 404
+
+    def test_edit_not_found(self, client, monkeypatch):
+        self._setup(client, monkeypatch)
+        r = client.put("/api/transactions/9999", json={"quantity": 5})
+        assert r.status_code == 404
+
+    def test_delete_not_found(self, client, monkeypatch):
+        self._setup(client, monkeypatch)
+        r = client.delete("/api/transactions/9999")
+        assert r.status_code == 404

@@ -77,8 +77,10 @@ export interface LedgerImportResponse {
 export type HoldingStatus = 'STRONG_GAIN' | 'GAIN' | 'FLAT' | 'LOSS' | 'STRONG_LOSS'
 
 export interface Holding {
+  account_id: number
   symbol: string
   exchange: string
+  isin?: string | null
   quantity: number
   average_price: number
   last_price: number
@@ -110,6 +112,9 @@ export interface WatchlistItem {
   // Optional buy-price range; either bound may be null.
   entry_low: number | null
   entry_high: number | null
+  // Optional trade-plan notes; either field may be null.
+  catalyst: string | null
+  exit_when: string | null
 }
 
 export interface WatchlistCreate {
@@ -118,6 +123,8 @@ export interface WatchlistCreate {
   note: string
   entry_low?: number | null
   entry_high?: number | null
+  catalyst?: string | null
+  exit_when?: string | null
 }
 
 export type SuggestionBucket = 'CORE_GROWTH' | 'TACTICAL' | 'SWAP_CANDIDATE'
@@ -146,32 +153,9 @@ export interface WatchlistSuggestions {
   flagged_holdings?: FlaggedHolding[]
 }
 
-// Async batch jobs (daily review + watchlist suggestions go through the
-// provider Batch API: ~50% cheaper, asynchronous submit -> poll -> result).
-export type BatchStatus = 'pending' | 'completed' | 'failed' | 'expired' | 'cancelled'
-
-export interface BatchJob<T> {
-  batch_id: string | number | null
-  status: BatchStatus
-  result?: T
-  error?: string | null
-}
-
-// Insights types
+// Insights types. The AI features are PROMPT-ONLY — the app calls no AI model;
+// these shapes describe the JSON the user pastes back from Claude/ChatGPT.
 export type InsightAction = 'BUY' | 'SELL' | 'HOLD'
-
-export interface Recommendation {
-  symbol: string
-  action: InsightAction
-  confidence: number
-  rationale: string
-}
-
-export interface Analysis {
-  symbol: string
-  summary: string
-  [key: string]: unknown
-}
 
 // Portfolio review (AI analysis of all holdings + watchlist vs an FY goal)
 export interface PortfolioRecommendation {
@@ -185,24 +169,12 @@ export interface PortfolioRecommendation {
   exit_hint?: string | null
 }
 
-export interface ReviewMessage {
-  role: 'user' | 'assistant'
-  content: string
-}
-
 export interface PortfolioReview {
   fy: string
   target_profit_pct: number
   answer: string
   portfolio_commentary: string
   recommendations: PortfolioRecommendation[]
-}
-
-// AI Provider types
-export interface AIProvider {
-  name: string
-  active: boolean
-  configured: boolean
 }
 
 // Transaction types
@@ -214,8 +186,33 @@ export interface Transaction {
   trade_type: string
   quantity: number
   price: number
+  amount: number
+  fees?: number
   trade_date: string
   account_id?: string
+}
+
+// Add/edit a single trade behind a holding. `amount` is always derived
+// server-side (qty × price, 0 for a bonus), so it is never sent.
+export interface TransactionCreate {
+  account_id: number
+  symbol: string
+  exchange: string
+  isin?: string | null
+  trade_type: string        // buy | sell | bonus
+  quantity: number
+  price: number
+  trade_date: string
+  fees?: number
+}
+
+export type TransactionUpdate = Partial<Omit<TransactionCreate, 'account_id'>>
+
+export interface TransactionMutationResponse {
+  message: string
+  transaction: Transaction
+  holdings_synced: number
+  prices_refreshed: number
 }
 
 // Health
